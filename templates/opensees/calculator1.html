@@ -1,0 +1,186 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="mb-4">Structural Model Generator</h2>
+    
+    {% include "opensees/calculator_nav.html" %}
+    
+    <form method="post" action="">
+    {% csrf_token %}
+    <!-- Existing fields -->
+    <div class="form-group">
+        <label for="numBayX">Number of Bays in X Direction</label>
+        <input type="number" class="form-control" id="numBayX" name="numBayX" 
+            value="{{ request.POST.numBayX|default:'2' }}" min="1" required>
+    </div>
+    <div class="form-group">
+        <label for="numBayY">Number of Bays in Y Direction</label>
+        <input type="number" class="form-control" id="numBayY" name="numBayY" 
+            value="{{ request.POST.numBayY|default:'2' }}" min="1" required>
+    </div>
+    <div class="form-group">
+        <label for="numFloor">Number of Floors</label>
+        <input type="number" class="form-control" id="numFloor" name="numFloor" 
+            value="{{ request.POST.numFloor|default:'3' }}" min="1" required>
+    </div>
+    
+    <!-- New division fields -->
+    <div class="form-group">
+        <label for="num_x_div">Divisions per Bay in X Direction</label>
+        <input type="number" class="form-control" id="num_x_div" name="num_x_div" 
+            value="{{ request.POST.num_x_div|default:'1' }}" min="1" required>
+        <small class="form-text text-muted">Number of shell elements per bay in X direction</small>
+    </div>
+    <div class="form-group">
+        <label for="num_y_div">Divisions per Bay in Y Direction</label>
+        <input type="number" class="form-control" id="num_y_div" name="num_y_div" 
+            value="{{ request.POST.num_y_div|default:'1' }}" min="1" required>
+        <small class="form-text text-muted">Number of shell elements per bay in Y direction</small>
+    </div>
+    
+    <!-- List inputs -->
+    <div class="form-group">
+        <label for="bayWidthX">Bay Widths in X Direction (comma-separated, meters)</label>
+        <textarea class="form-control" id="bayWidthX" name="bayWidthX" rows="2" required>{{ request.POST.bayWidthX|default:'[5.0, 5.0]' }}</textarea>
+        <small class="form-text text-muted">Example: [5.0, 5.0] for two 5m bays</small>
+    </div>
+    <div class="form-group">
+        <label for="bayWidthY">Bay Widths in Y Direction (comma-separated, meters)</label>
+        <textarea class="form-control" id="bayWidthY" name="bayWidthY" rows="2" required>{{ request.POST.bayWidthY|default:'[4.0, 4.0]' }}</textarea>
+    </div>
+    <div class="form-group">
+        <label for="storyHeights">Story Heights (comma-separated, meters)</label>
+        <textarea class="form-control" id="storyHeights" name="storyHeights" rows="3" required>{{ request.POST.storyHeights|default:'[3.0, 3.0, 3.0]' }}</textarea>
+    </div>
+    <div class="form-group">
+        <label for="slab_nodes">Slab Nodes (as list)</label>
+        <textarea class="form-control" id="slab_nodes" name="slab_nodes" rows="3" required>
+    {{ request.POST.slab_nodes|default:'["slab1", [1, 2, 3, 4], [], "slab2", [0, 0, 10, 8], [], "slab3", [0, 0, 10, 8], []]' }}
+        </textarea>
+        <small class="form-text text-muted">Enter slab data in list format</small>
+    </div>
+
+<!-- New input fields -->
+<div class="form-group">
+    <label for="add_nodes">Add Nodes</label>
+    <textarea class="form-control" id="add_nodes" name="add_nodes" rows="3" placeholder='{"node_id1": [x1,y1,z1], "node_id2": [x2,y2,z2], ...}'></textarea>
+    <small class="form-text text-muted">Format: {"node_id": [x,y,z], ...} - Use unique node IDs</small>
+</div>
+
+<div class="form-group">
+    <label for="delete_nodes">Delete Nodes</label>
+    <textarea class="form-control" id="delete_nodes" name="delete_nodes" rows="2" placeholder='[node_id1, node_id2, ...]'></textarea>
+    <small class="form-text text-muted">Format: [node_id, node_id, ...]</small>
+</div>
+
+<div class="form-group">
+    <label for="add_beams">Add Beams</label>
+    <textarea class="form-control" id="add_beams" name="add_beams" rows="3" placeholder='{"beam_id1": [i_node,j_node], "beam_id2": [i_node,j_node], ...}'></textarea>
+    <small class="form-text text-muted">Format: {"beam_id": [i_node,j_node], ...} - Nodes must exist</small>
+</div>
+
+<div class="form-group">
+    <label for="delete_beams">Delete Beams</label>
+    <textarea class="form-control" id="delete_beams" name="delete_beams" rows="2" placeholder='["beam_id1", "beam_id2", ...]'></textarea>
+    <small class="form-text text-muted">Format: ["beam_id", "beam_id", ...]</small>
+</div>
+
+<div class="form-group">
+    <label for="add_shells">Add Shells</label>
+    <textarea class="form-control" id="add_shells" name="add_shells" rows="3" placeholder='{"shell_id1": [i,j,k,l], "shell_id2": [i,j,k,l], ...}'></textarea>
+    <small class="form-text text-muted">Format: {"shell_id": [i,j,k,l], ...} - 4 nodes required per shell</small>
+</div>
+
+<div class="form-group">
+    <label for="delete_shells">Delete Shells</label>
+    <textarea class="form-control" id="delete_shells" name="delete_shells" rows="2" placeholder='["shell_id1", "shell_id2", ...]'></textarea>
+    <small class="form-text text-muted">Format: ["shell_id", "shell_id", ...]</small>
+</div>
+
+    <button type="submit" class="btn btn-primary">Generate Model</button>
+</form>
+    
+
+
+    <div class="mb-3">
+        <h5>Building</h5>
+        {{ building }}
+    </div>
+
+    <div class="mb-3">
+        <h5>Nodes</h5>
+        {{ frame_nodes }}
+    </div>
+
+    <div class="mb-3">
+        <h5>Beams</h5>
+        {{ beams }}
+    </div>
+
+    <div class="mb-3">
+        <h5>Shells</h5>
+        {{ shells }}
+    </div>
+
+
+{% if image_url %}
+<div class="mt-4">
+    <h5>3D Model Visualization</h5>
+    <img src="{{ image_url }}" alt="Model Visualization" class="img-fluid" width="800" height="600">
+    <div id="model-container" style="width: 100%; height: 500px; border: 1px solid #ccc;"></div>
+</div>
+{% endif %}
+
+</div>
+
+
+
+<style>
+    .scroll-box {
+        max-height: 300px;
+        overflow-y: auto;
+        background-color: #f8f9fa;
+        padding: 15px;
+        border-radius: 5px;
+        font-family: monospace;
+        font-size: 0.9rem;
+    }
+    .scroll-box ol {
+        padding-left: 20px;
+    }
+    .scroll-box li {
+        margin-bottom: 5px;
+        white-space: nowrap;
+    }
+</style>
+
+<!-- JavaScript to show/hide relevant fields based on selections -->
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    function toggleFields() {
+        const operationType = document.getElementById('operation_type').value;
+        const elementType = document.getElementById('element_type').value;
+        
+        // Show/hide coordinates field (only for adding nodes)
+        document.getElementById('new_coords_group').style.display = 
+            (operationType === 'add' && elementType === 'node') ? 'block' : 'none';
+        
+        // Show/hide nodes field (for adding members/shells)
+        document.getElementById('new_nodes_group').style.display = 
+            (operationType === 'add' && (elementType === 'member' || elementType === 'shell')) ? 'block' : 'none';
+        
+        // Show/hide floor level (for shell operations)
+        document.getElementById('floor_level_group').style.display = 
+            (elementType === 'shell') ? 'block' : 'none';
+    }
+    
+    // Add event listeners
+    document.getElementById('operation_type').addEventListener('change', toggleFields);
+    document.getElementById('element_type').addEventListener('change', toggleFields);
+    
+    // Initial setup
+    toggleFields();
+});
+</script>
+{% endblock %}

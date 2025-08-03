@@ -1,0 +1,13 @@
+<div class="mb-4">
+    <a href="{% url 'opensees:calculator1' project.pk task.pk %}" class="btn btn-outline-secondary">Model Generator</a>
+    <a href="{% url 'opensees:calculator2' project.pk task.pk %}" class="btn btn-outline-primary">Section Properties</a>
+    <a href="{% url 'opensees:calculator3' project.pk task.pk %}" class="btn btn-outline-secondary">Concrete_Properties</a>
+    
+    <a href="{% url 'opensees:calculator4' project.pk task.pk %}" class="btn btn-outline-primary">Seismic Analysis</a>
+
+    
+    <a href="{% url 'opensees:input' project.pk task.pk %}" class="btn btn-outline-secondary">← Back to Input</a>
+    
+    <a href="{% url 'opensees:calculator5' project.pk task.pk %}" class="btn btn-outline-primary">Wind Analysis</a>
+
+</div>

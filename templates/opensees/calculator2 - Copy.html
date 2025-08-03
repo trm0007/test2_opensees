@@ -1,0 +1,173 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+
+
+
+<div class="container">
+    <h2 class="mb-4">Section Properties Calculator</h2>
+    
+    {% include "opensees/calculator_nav.html" %}
+    
+    <form method="post">
+        {% csrf_token %}
+        
+        <!-- Analysis Parameters Section -->
+        <div class="form-row">
+            <div class="col-md-12">
+                <div id="material_props" class="mt-4">
+                    <h4>Analysis Parameters</h4>
+                    <div class="form-group">
+                        <label for="analysis_parameters">Analysis Parameters (JSON format):</label>
+                        <textarea class="form-control" id="analysis_parameters" name="analysis_parameters" rows="15" required>
+{
+    "material_properties": {
+        "mat1": {
+            "name": "mat1",
+            "elastic_modulus": 1.0,
+            "poissons_ratio": 0.0,
+            "density": 1.0,
+            "yield_strength": 1.0,
+            "color": "tab:olive"
+        },
+        "mat2": {
+            "name": "mat2",
+            "elastic_modulus": 2.0,
+            "poissons_ratio": 0.0,
+            "density": 2.0,
+            "yield_strength": 2.0,
+            "color": "tab:purple"
+        }
+    },
+    "geometry_definitions": {
+        "left_rect_coords": [[0, 0], [2, 0], [2, 3], [0, 3]],
+        "right_rect_coords": [[2, 0], [4, 0], [4, 3], [2, 3]],
+        "hole1_coords": [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0], [0.5, 1.0]],
+        "hole2_coords": [[3.0, 1.0], [3.5, 1.0], [3.5, 1.5], [3.0, 1.5]],
+        "assignments": [
+            ["left_rect_coords", "mat1"],
+            ["right_rect_coords", "mat2"],
+            ["hole1_coords", null],
+            ["hole2_coords", null]
+        ]
+    },
+    "analysis_parameters": {
+        "rotation_angle": 45,
+        "mesh_size": 10.0,
+        "output_dir": "outputs555"
+    },
+    "load_data": {
+        "n": 50000,
+        "mxx": -5000000,
+        "m22": 2500000,
+        "mzz": 500000,
+        "vx": 10000,
+        "vy": 5000
+    }
+}
+                        </textarea>
+                    </div>
+                    <small class="form-text text-muted">
+                        Enter all analysis parameters in JSON format. Includes material properties, geometry definitions,
+                        analysis parameters, and load data.
+                    </small>
+                </div>
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Calculate Properties</button>
+    </form>
+
+
+    {% if result is not None %}
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Section Properties:</h4>
+        <pre>{{ result.properties|pprint }}</pre>
+    </div>
+
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Section Stresses:</h4>
+        <pre>{{ result.stresses|pprint }}</pre>
+    </div>
+
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Output Paths:</h4>
+        <pre>{{ result.output_paths|pprint }}</pre>
+    </div>
+    {% endif %}
+    
+
+ 
+<div class="mt-4 p-3 bg-light rounded">
+    <h4>Analysis Results:</h4>
+    <div class="row">
+        {% for name, url in result.images.items %}
+        <div class="col-md-6 mb-4">
+            <div class="card">
+                <div class="card-header">{{ name|title }}</div>
+                <div class="card-body">
+                    <img src="{{ url }}" alt="{{ name }}" class="img-fluid">
+                    <p class="mt-2 text-muted small">{{ url }}</p>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+
+
+        <h2 class="mb-4">INPUT EXAMPLES DATA</h2>
+    <H6>{
+    "material_properties": {
+        "mat1": {
+            "name": "mat1",
+            "elastic_modulus": 1.0,
+            "poissons_ratio": 0.0,
+            "density": 1.0,
+            "yield_strength": 1.0,
+            "color": "tab:olive"
+        },
+        "mat2": {
+            "name": "mat2",
+            "elastic_modulus": 2.0,
+            "poissons_ratio": 0.0,
+            "density": 2.0,
+            "yield_strength": 2.0,
+            "color": "tab:purple"
+        }
+    },
+    "geometry_definitions": {
+        "left_rect_coords": [[0, 0], [2, 0], [2, 3], [0, 3]],
+        "right_rect_coords": [[2, 0], [4, 0], [4, 3], [2, 3]],
+        "hole1_coords": [[0.5, 0.5], [1.0, 0.5], [1.0, 1.0], [0.5, 1.0]],
+        "hole2_coords": [[3.0, 1.0], [3.5, 1.0], [3.5, 1.5], [3.0, 1.5]],
+        "assignments": [
+            ["left_rect_coords", "mat1"],
+            ["right_rect_coords", "mat2"],
+            ["hole1_coords", null],
+            ["hole2_coords", null]
+        ]
+    },
+    "analysis_parameters": {
+        "rotation_angle": 45,
+        "mesh_size": 10.0,
+        "output_dir": "outputs555"
+    },
+    "load_data": {
+        "n": 50000,
+        "mxx": -5000000,
+        "m22": 2500000,
+        "mzz": 500000,
+        "vx": 10000,
+        "vy": 5000
+    }
+}
+    </H6>
+    <div class="mt-4">
+        <p>Logged in as: <strong>{{ user.username }}</strong></p>
+        <p>Project: <strong>{{ project.name }}</strong></p>
+        <p>Task: <strong>{{ task.name }}</strong></p>
+    </div>
+</div>
+{% endblock %}

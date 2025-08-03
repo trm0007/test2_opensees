@@ -1,0 +1,57 @@
+/* General Styles */
+body {
+    padding-top: 20px;
+    font-family: Arial, sans-serif;
+}
+
+.hero-section {
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+/* Navbar Styles */
+.navbar {
+    margin-bottom: 20px;
+}
+
+/* Footer Styles */
+footer {
+    margin-top: 50px;
+    padding: 20px 0;
+}
+
+/* Task List Styles */
+.completed {
+    text-decoration: line-through;
+    color: #6c757d;
+}
+
+/* Form Styles */
+form {
+    max-width: 600px;
+    margin: 0 auto;
+}
+
+/* Card Styles */
+.card {
+    margin-bottom: 20px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.card:hover {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+/* Button Styles */
+.btn {
+    margin-right: 5px;
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+    .sidebar {
+        display: none;
+    }
+}

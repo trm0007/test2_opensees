@@ -1,0 +1,15 @@
+{% extends 'myapp/base.html' %}
+{% block title %}{{ project.title }}{% endblock %}
+{% block content %}
+<h1>{{ project.title }}</h1>
+<p>Created: {{ project.created_at|date:"M d, Y" }}</p>
+<p>Last updated: {{ project.updated_at|date:"M d, Y" }}</p>
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title">Description</h5>
+        <p class="card-text">{{ project.description }}</p>
+    </div>
+</div>
+<a href="{% url 'project_update' project.pk %}" class="btn btn-secondary">Edit</a>
+<a href="{% url 'project_list' %}" class="btn btn-primary">Back to Projects</a>
+{% endblock %}

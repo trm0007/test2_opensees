@@ -1,0 +1,457 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="mb-4">Calculator 5: Wind Analysis</h2>
+    
+    <!-- Navigation -->
+    <div class="mb-4">
+        <a href="{% url 'opensees:calculator1' project.pk task.pk %}" class="btn btn-outline-secondary">Model Generator</a>
+        <a href="{% url 'opensees:calculator2' project.pk task.pk %}" class="btn btn-outline-secondary">Section Properties</a>
+        <a href="{% url 'opensees:calculator3' project.pk task.pk %}" class="btn btn-outline-secondary">Concrete Properties</a>
+        <a href="{% url 'opensees:calculator4' project.pk task.pk %}" class="btn btn-outline-secondary">Seismic Analysis</a>
+        <a href="{% url 'opensees:calculator5' project.pk task.pk %}" class="btn btn-outline-primary">Wind Analysis</a>
+        <a href="{% url 'opensees:input' project.pk task.pk %}" class="btn btn-outline-secondary">← Back to Input</a>
+    </div>
+    
+    <form method="post" class="mb-4">
+        {% csrf_token %}
+        
+        <!-- Wind Analysis Parameters Section -->
+        <div class="form-row">
+            <div class="col-md-12">
+                <div id="wind_params" class="mt-4">
+                    <h4>Wind Analysis Parameters</h4>
+                    <div class="form-group">
+                        <label for="wind_parameters">Wind Analysis Parameters (Python format):</label>
+                        <textarea class="form-control" id="wind_parameters" name="wind_parameters" rows="25" required>
+# ========================
+# WIND ANALYSIS PARAMETERS
+# ========================
+
+# Building Parameters
+num_stories = 10
+story_height = 3.2  # meters
+building_dimensions = {"X": 30, "Y": 20}  # meters (length x width)
+wind_direction = "X"  # Wind direction: "X" or "Y"
+
+# Structural Parameters
+structural_type = "Concrete moment-resisting frames"
+
+# Location and Site Parameters
+location = "Dhaka"  # Select from Bangladesh locations
+exposure_category = "B"  # A, B, or C
+nature_of_occupancy = "Elementary school or secondary school facilities with a capacity greater than 250"
+
+# Wind Load Parameters
+structure_type = "Main Wind Force Resisting System"
+topographic_params = {"k1": 0, "k2": 0, "k3": 0}  # Topographic factors
+
+# Analysis Options
+analysis_type = "wind_analysis"
+include_dynamic_effects = True
+include_gust_effects = True
+
+# Output Options
+generate_plots = True
+output_format = "detailed"
+
+# ========================
+# AVAILABLE OPTIONS
+# ========================
+
+# Structural Types:
+# - "Concrete moment-resisting frames"
+# - "Steel moment-resisting frames" 
+# - "Eccentrically braced steel frame"
+# - "All other structural systems"
+
+# Bangladesh Locations:
+# "Angarpota", "Lalmonirhat", "Bagerhat", "Madaripur", "Bandarban", "Magura", 
+# "Barguna", "Manikganj", "Barisal", "Meherpur", "Bhola", "Maheshkhali", 
+# "Bogra", "Moulvibazar", "Brahmanbaria", "Munshiganj", "Chandpur", "Mymensingh", 
+# "Chapai Nawabganj", "Naogaon", "Chittagong", "Narail", "Chuadanga", "Narayanganj", 
+# "Comilla", "Narsinghdi", "Cox's Bazar", "Natore", "Dahagram", "Netrokona", 
+# "Dhaka", "Nilphamari", "Dinajpur", "Noakhali", "Faridpur", "Pabna", "Feni", 
+# "Panchagarh", "Gaibandha", "Patuakhali", "Gazipur", "Pirojpur", "Gopalganj", 
+# "Rajbari", "Habiganj", "Rajshahi", "Hatiya", "Rangamati", "Ishurdi", "Rangpur", 
+# "Joypurhat", "Satkhira", "Jamalpur", "Shariatpur", "Jessore", "Sherpur", 
+# "Jhalakati", "Sirajganj", "Jhenaidah", "Srimangal", "Khagrachhari", 
+# "St. Martin's Island", "Khulna", "Sunamganj", "Kutubdia", "Sylhet", 
+# "Kishoreganj", "Sandwip", "Kurigram", "Tangail", "Kushtia", "Teknaf", 
+# "Lakshmipur", "Thakurgaon"
+
+# Exposure Categories:
+# A: Urban and suburban areas, wooded areas
+# B: Open terrain with scattered obstructions (default)
+# C: Flat, unobstructed areas and water surfaces
+
+# Structure Types for Wind Directionality:
+# Buildings: "Main Wind Force Resisting System", "Components and Cladding", "Arched Roofs"
+# Chimneys/Tanks: "Square", "Hexagonal", "Round"
+# Signs: "Solid Signs", "Open Signs and Lattice Framework"
+# Towers: "Triangular, square, rectangular", "All other cross section"
+
+# Occupancy Categories:
+# Category I: "Agricultural facilities", "Certain temporary facilities", "Minor storage facilities"
+# Category II: Standard occupancy buildings
+# Category III: "More than 300 people congregate in one area", "Day care facilities with a capacity greater than 150", 
+#              "Elementary school or secondary school facilities with a capacity greater than 250"
+# Category IV: Essential facilities like hospitals, emergency centers, etc.
+                        </textarea>
+                    </div>
+                    <small class="form-text text-muted">
+                        Enter all wind analysis parameters in Python format. Modify the values above according to your building requirements.
+                        The analysis will calculate wind pressures, forces, and story shears according to Bangladesh wind load standards.
+                    </small>
+                </div>
+            </div>
+        </div>
+        
+        <button type="submit" class="btn btn-primary btn-lg">Perform Wind Analysis</button>
+    </form>
+    
+    <!-- Results Section -->
+    {% if result %}
+        {% if result.error %}
+        <div class="alert alert-danger">
+            <h4>Error:</h4>
+            <p>{{ result.error }}</p>
+        </div>
+        {% else %}
+        
+        <!-- Building Parameters Results -->
+        <div class="card mb-4">
+            <div class="card-header bg-primary text-white">
+                <h4>Building Parameters</h4>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>Number of Stories:</strong> {{ result.building_parameters.num_stories }}</p>
+                        <p><strong>Story Height:</strong> {{ result.building_parameters.story_height }} m</p>
+                        <p><strong>Total Height:</strong> {{ result.building_parameters.total_height|floatformat:2 }} m</p>
+                        <p><strong>Wind Direction:</strong> {{ result.building_parameters.wind_direction }}-axis</p>
+                    </div>
+                    <div class="col-md-6">
+                        <p><strong>Building Length (L):</strong> {{ result.building_parameters.building_length }} m</p>
+                        <p><strong>Building Width (B):</strong> {{ result.building_parameters.building_width }} m</p>
+                        <p><strong>L/B Ratio:</strong> {{ result.building_parameters.L_over_B|floatformat:2 }}</p>
+                        <p><strong>Location:</strong> {{ result.building_parameters.location }}</p>
+                    </div>
+                </div>
+                <div class="row">
+                    <div class="col-md-12">
+                        <p><strong>Occupancy Category:</strong> {{ result.building_parameters.occupancy_category }}</p>
+                        <p><strong>Structural Type:</strong> {{ result.building_parameters.structural_type }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Wind Parameters Results -->
+        <div class="card mb-4">
+            <div class="card-header bg-success text-white">
+                <h4>Wind Parameters</h4>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>Basic Wind Speed (V):</strong> {{ result.wind_parameters.basic_wind_speed|floatformat:1 }} m/s</p>
+                        <p><strong>Importance Factor (I):</strong> {{ result.wind_parameters.importance_factor|floatformat:2 }}</p>
+                        <p><strong>Directionality Factor (Kd):</strong> {{ result.wind_parameters.directionality_factor|floatformat:2 }}</p>
+                    </div>
+                    <div class="col-md-6">
+                        <p><strong>Topographic Factor (Kzt):</strong> {{ result.wind_parameters.topographic_factor|floatformat:2 }}</p>
+                        <p><strong>Exposure Category:</strong> {{ result.wind_parameters.exposure_category }}</p>
+                        <p><strong>Structure Type:</strong> {{ result.wind_parameters.structure_type }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Exposure Constants -->
+        <div class="card mb-4">
+            <div class="card-header bg-info text-white">
+                <h4>Terrain Exposure Constants</h4>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-4">
+                        <p><strong>α (Alpha):</strong> {{ result.exposure_constants.alpha }}</p>
+                        <p><strong>zg:</strong> {{ result.exposure_constants.zg|floatformat:2 }} m</p>
+                        <p><strong>a:</strong> {{ result.exposure_constants.a|floatformat:4 }}</p>
+                    </div>
+                    <div class="col-md-4">
+                        <p><strong>b:</strong> {{ result.exposure_constants.b|floatformat:2 }}</p>
+                        <p><strong>c:</strong> {{ result.exposure_constants.c|floatformat:2 }}</p>
+                        <p><strong>L:</strong> {{ result.exposure_constants.L|floatformat:2 }} m</p>
+                    </div>
+                    <div class="col-md-4">
+                        <p><strong>ε (Epsilon):</strong> {{ result.exposure_constants.epsilon|floatformat:3 }}</p>
+                        <p><strong>z_min:</strong> {{ result.exposure_constants.z_min|floatformat:2 }} m</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Analysis Results -->
+        <div class="card mb-4">
+            <div class="card-header bg-warning text-dark">
+                <h4>Analysis Results</h4>
+            </div>
+            <div class="card-body">
+                <div class="row">
+                    <div class="col-md-6">
+                        <p><strong>Building Period (T):</strong> {{ result.analysis_results.building_period|floatformat:3 }} sec</p>
+                        <p><strong>Maximum Velocity Pressure:</strong> {{ result.analysis_results.max_velocity_pressure|floatformat:2 }} N/m²</p>
+                    </div>
+                    <div class="col-md-6">
+                        <p><strong>Total Wind Force:</strong> {{ result.analysis_results.total_wind_force }} N ({{ result.analysis_results.total_wind_force }} kN)</p>
+                        <p><strong>Period Coefficients:</strong> Ct = {{ result.analysis_results.Ct }}, m = {{ result.analysis_results.m }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Story Wind Pressures and Forces -->
+        <div class="card mb-4">
+            <div class="card-header bg-dark text-white">
+                <h4>Story Wind Pressures and Forces</h4>
+            </div>
+            <div class="card-body">
+                <div class="table-responsive">
+                    <table class="table table-striped table-bordered">
+                        <thead class="thead-dark">
+                            <tr>
+                                <th>Story</th>
+                                <th>Height (m)</th>
+                                <th>Windward Pressure (N/m²)</th>
+                                <th>Leeward Pressure (N/m²)</th>
+                                <th>Total Pressure (N/m²)</th>
+                                <th>Wind Force (kN)</th>
+                                <th>Story Shear (kN)</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for story in result.story_results %}
+                            <tr>
+                                <td>{{ story.story }}</td>
+                                <td>{{ story.height }}</td>
+                                <td>{{ story.windward_pressure }}</td>
+                                <td>{{ story.leeward_pressure }}</td>
+                                <td>{{ story.total_pressure }}</td>
+                                <td>{{ story.force }}</td>
+                                <td>{{ story.shear }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Copy Code Section -->
+        <div class="card mb-4">
+            <div class="card-header">
+                <h4>Wind Analysis Code</h4>
+                <button onclick="copyWindAnalysisCode()" class="btn btn-sm btn-outline-secondary float-right">Copy Code</button>
+            </div>
+            <div class="card-body">
+                <pre id="wind-analysis-code" class="bg-light p-3" style="font-size: 0.9em;">
+# Wind Analysis Results
+# Building: {{ result.building_parameters.structural_type }}
+# Location: {{ result.building_parameters.location }}
+# Stories: {{ result.building_parameters.num_stories }}
+# Wind Direction: {{ result.building_parameters.wind_direction }}-axis
+
+import numpy as np
+
+# Building parameters
+num_stories = {{ result.building_parameters.num_stories }}
+total_height = {{ result.building_parameters.total_height }}
+building_length = {{ result.building_parameters.building_length }}
+building_width = {{ result.building_parameters.building_width }}
+
+# Wind parameters
+basic_wind_speed = {{ result.wind_parameters.basic_wind_speed }}  # m/s
+importance_factor = {{ result.wind_parameters.importance_factor }}
+directionality_factor = {{ result.wind_parameters.directionality_factor }}
+
+# Analysis results
+building_period = {{ result.analysis_results.building_period }}  # sec
+total_wind_force = {{ result.analysis_results.total_wind_force }}  # N
+max_velocity_pressure = {{ result.analysis_results.max_velocity_pressure }}  # N/m²
+
+# Story wind forces (N)
+story_forces = [{% for story in result.story_results %}{{ story.force|floatformat:2 }}{% if not forloop.last %}, {% endif %}{% endfor %}]
+
+# Story wind shears (N)
+story_shears = [{% for story in result.story_results %}{{ story.shear|floatformat:2 }}{% if not forloop.last %}, {% endif %}{% endfor %}]
+
+# Story pressures (N/m²)
+windward_pressures = [{% for story in result.story_results %}{{ story.windward_pressure|floatformat:2 }}{% if not forloop.last %}, {% endif %}{% endfor %}]
+leeward_pressures = [{% for story in result.story_results %}{{ story.leeward_pressure|floatformat:2 }}{% if not forloop.last %}, {% endif %}{% endfor %}]
+
+print("Wind Analysis Complete")
+print(f"Total Wind Force: {total_wind_force/1000:.2f} kN")
+print(f"Building Period: {building_period:.3f} sec")
+print(f"Basic Wind Speed: {basic_wind_speed:.1f} m/s")
+                </pre>
+            </div>
+        </div>
+        
+        {% endif %}
+    {% endif %}
+    
+    <!-- Default Parameters Code Block -->
+    <div class="card" style="position: relative; padding: 20px; border: 1px solid #ccc; border-radius: 10px; font-family: monospace;">
+        <button onclick="copyWindCode(this)" style="position: absolute; top: 10px; right: 10px; padding: 5px 10px; font-size: 12px; cursor: pointer;">Copy</button>
+        
+        <div id="wind-code-block">
+            <pre>
+# ========================
+# WIND ANALYSIS PARAMETERS
+# ========================
+
+# Building Parameters
+num_stories = 10
+story_height = 3.2  # meters
+building_dimensions = {"X": 30, "Y": 20}  # meters (length x width)
+wind_direction = "X"  # Wind direction: "X" or "Y"
+
+# Structural Parameters
+structural_type = "Concrete moment-resisting frames"
+
+# Location and Site Parameters
+location = "Dhaka"  # Select from Bangladesh locations
+exposure_category = "B"  # A, B, or C
+nature_of_occupancy = "Elementary school or secondary school facilities with a capacity greater than 250"
+
+# Wind Load Parameters
+structure_type = "Main Wind Force Resisting System"
+topographic_params = {"k1": 0, "k2": 0, "k3": 0}  # Topographic factors
+
+# Analysis Options
+analysis_type = "wind_analysis"
+include_dynamic_effects = True
+include_gust_effects = True
+
+# Available Building Dimensions Format:
+# building_dimensions = {"X": length_in_meters, "Y": width_in_meters}
+# wind_direction = "X" means wind blows parallel to X-axis
+# wind_direction = "Y" means wind blows parallel to Y-axis
+
+# Bangladesh Locations (Basic Wind Speeds):
+# High wind areas (80.0 m/s): "Chittagong", "Cox's Bazar", "Patuakhali", "Barguna", etc.
+# Medium wind areas (60-70 m/s): "Dhaka", "Sylhet", "Rangpur", "Barisal", etc.
+# Lower wind areas (40-50 m/s): "Dinajpur", "Panchagarh", "Chapai Nawabganj", etc.
+
+# Exposure Categories:
+# A: Urban/suburban areas with numerous obstructions
+# B: Open terrain with scattered obstructions (most common)
+# C: Flat, unobstructed areas and water surfaces
+
+# Structure Types for Directionality Factor:
+# "Main Wind Force Resisting System" (Kd = 0.85)
+# "Components and Cladding" (Kd = 0.85)
+# "Square" chimneys/tanks (Kd = 0.90)
+# "Round" chimneys/tanks (Kd = 0.95)
+            </pre>
+        </div>
+    </div>
+    
+    <div class="mt-4">
+        <p>Logged in as: <strong>{{ user.username }}</strong></p>
+        <p>Project: <strong>{{ project.name }}</strong></p>
+        <p>Task: <strong>{{ task.name }}</strong></p>
+    </div>
+</div>
+
+<script>
+function copyWindCode(button) {
+    const code = button.parentElement.querySelector('#wind-code-block').innerText;
+    navigator.clipboard.writeText(code).then(() => {
+        button.textContent = "Copied!";
+        setTimeout(() => button.textContent = "Copy", 2000);
+    });
+}
+
+function copyWindAnalysisCode() {
+    const code = document.getElementById('wind-analysis-code').innerText;
+    navigator.clipboard.writeText(code).then(() => {
+        const button = document.querySelector('button[onclick="copyWindAnalysisCode()"]');
+        const originalText = button.textContent;
+        button.textContent = "Copied!";
+        button.classList.remove('btn-outline-secondary');
+        button.classList.add('btn-success');
+        setTimeout(() => {
+            button.textContent = originalText;
+            button.classList.remove('btn-success');
+            button.classList.add('btn-outline-secondary');
+        }, 2000);
+    }).catch(err => {
+        console.error('Failed to copy: ', err);
+        alert('Failed to copy code. Please select and copy manually.');
+    });
+}
+
+// Form validation for textarea input
+document.querySelector('form').addEventListener('submit', function(e) {
+    const windParams = document.getElementById('wind_parameters').value.trim();
+    
+    if (windParams.length < 100) {
+        e.preventDefault();
+        alert('Please enter valid wind analysis parameters!');
+        return;
+    }
+    
+    // Basic validation for required parameters
+    const requiredParams = ['num_stories', 'story_height', 'building_dimensions', 'wind_direction', 'location', 'exposure_category'];
+    const missingParams = requiredParams.filter(param => !windParams.includes(param));
+    
+    if (missingParams.length > 0) {
+        e.preventDefault();
+        alert(`Missing required parameters: ${missingParams.join(', ')}`);
+        return;
+    }
+    
+    // Validate wind direction
+    if (!windParams.includes('wind_direction = "X"') && !windParams.includes('wind_direction = "Y"')) {
+        e.preventDefault();
+        alert('Wind direction must be either "X" or "Y"');
+        return;
+    }
+});
+
+// Add input helpers
+document.addEventListener('DOMContentLoaded', function() {
+    const textarea = document.getElementById('wind_parameters');
+    
+    // Add line numbers (optional enhancement)
+    let lineCount = 1;
+    textarea.addEventListener('input', function() {
+        const lines = this.value.split('\n').length;
+        if (lines !== lineCount) {
+            lineCount = lines;
+            // Could add line numbers here if needed
+        }
+    });
+    
+    // Add syntax highlighting hints (basic)
+    textarea.addEventListener('blur', function() {
+        const content = this.value;
+        
+        // Check for common syntax issues
+        if (content.includes('building_dimensions') && !content.includes('{"X":') && !content.includes('{"Y":')) {
+            console.warn('building_dimensions should be a dictionary with "X" and "Y" keys');
+        }
+        
+        if (content.includes('topographic_params') && !content.includes('{"k1":')) {
+            console.warn('topographic_params should be a dictionary with "k1", "k2", "k3" keys');
+        }
+    });
+});
+</script>
+
+{% endblock %}

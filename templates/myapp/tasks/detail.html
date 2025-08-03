@@ -1,0 +1,46 @@
+{% extends 'myapp/base.html' %}
+{% block title %}{{ task.title }}{% endblock %}
+{% block content %}
+<h1>{{ task.title }}</h1>
+<p>Status: {% if task.completed %}Completed{% else %}Pending{% endif %}</p>
+<p>Created: {{ task.created_at|date:"M d, Y" }}</p>
+<p>Last updated: {{ task.updated_at|date:"M d, Y" }}</p>
+<div class="card mb-4">
+    <div class="card-body">
+        <h5 class="card-title">Description</h5>
+        <p class="card-text">{{ task.description }}</p>
+    </div>
+</div>
+<a href="{% url 'task_update' project.pk task.pk %}" class="btn btn-secondary">Edit</a>
+<a href="{% url 'task_list' project.pk %}" class="btn btn-primary">Back to Tasks</a>
+
+
+<!-- OpenSees Components -->
+<div class="card mb-4">
+    <div class="card-header">
+        OpenSees Components
+    </div>
+    <div class="card-body">
+        <div class="list-group">
+            <a href="{% url 'opensees:model_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Model Definition</a>
+            <a href="{% url 'opensees:timeseries_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Time Series</a>
+            <a href="{% url 'opensees:material_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Materials</a>
+            <a href="{% url 'opensees:section_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Sections</a>
+            <a href="{% url 'opensees:node_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Nodes</a>
+            <a href="{% url 'opensees:element_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Elements</a>
+            <a href="{% url 'opensees:constraint_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Constraints</a>
+            <a href="{% url 'opensees:diaphragm_list' project.pk task.pk %}" 
+               class="list-group-item list-group-item-action">Diaphragms</a>
+        </div>
+    </div>
+</div>
+
+
+{% endblock %}

@@ -1,0 +1,15 @@
+<div class="card mb-4">
+    <div class="card-header">
+        Quick Links
+    </div>
+    <div class="card-body">
+        <ul class="list-group list-group-flush">
+            <li class="list-group-item"><a href="{% url 'home' %}">Home</a></li>
+            <li class="list-group-item"><a href="{% url 'about' %}">About</a></li>
+            <li class="list-group-item"><a href="{% url 'contact' %}">Contact</a></li>
+            {% if user.is_authenticated %}
+            <li class="list-group-item"><a href="{% url 'project_list' %}">My Projects</a></li>
+            {% endif %}
+        </ul>
+    </div>
+</div>

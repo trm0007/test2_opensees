@@ -1,0 +1,35 @@
+{% extends 'myapp/base.html' %}
+{% block title %}Tasks for {{ project.title }}{% endblock %}
+{% block content %}
+<h1>Tasks for {{ project.title }}</h1>
+<a href="{% url 'task_create' project.pk %}" class="btn btn-success mb-3">Create New Task</a>
+<a href="{% url 'project_list' %}" class="btn btn-secondary mb-3">Back to Projects</a>
+<div class="list-group">
+    {% for task in tasks %}
+    <div class="list-group-item {% if task.completed %}list-group-item-success{% endif %}">
+        <div class="d-flex w-100 justify-content-between">
+            <h5 class="mb-1">
+                {% if task.completed %}<s>{% endif %}
+                {{ task.title }}
+                {% if task.completed %}</s>{% endif %}
+            </h5>
+            <small>{{ task.created_at|date:"M d, Y" }}</small>
+        </div>
+        <p class="mb-1">{{ task.description|truncatechars:100 }}</p>
+        <div class="btn-group btn-group-sm">
+            <a href="{% url 'task_detail' project.pk task.pk %}" class="btn btn-primary">View</a>
+            <a href="{% url 'task_update' project.pk task.pk %}" class="btn btn-secondary">Edit</a>
+            <a href="{% url 'task_delete' project.pk task.pk %}" class="btn btn-danger">Delete</a>
+            <!-- Moved OpenSees link inside the loop -->
+            <a href="{% url 'opensees:input' project.pk task.pk %}" class="btn btn-info">
+                OpenSees Analysis
+            </a>
+        </div>
+    </div>
+    {% empty %}
+    <div class="list-group-item">
+        <p>No tasks yet. <a href="{% url 'task_create' project.pk %}">Create your first task</a></p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

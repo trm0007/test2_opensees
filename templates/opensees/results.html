@@ -1,0 +1,42 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+<div class="container mt-4">
+    <h1 class="text-center mb-4">Analysis Results for {{ task.name }}</h1>
+    
+    <div class="result-section">
+        <h3>Modal Analysis</h3>
+        <div class="table-responsive">
+            <table class="modal-table">
+                <thead>
+                    <tr>
+                        <th>Mode</th>
+                        <th>Period (s)</th>
+                        <th>Frequency (Hz)</th>
+                        <th>Participation Factor</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for mode in results.modes %}
+                    <tr>
+                        <td>{{ mode.number }}</td>
+                        <td>{{ mode.period|floatformat:4 }}</td>
+                        <td>{{ mode.frequency|floatformat:4 }}</td>
+                        <td>{{ mode.participation|floatformat:4 }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div>
+    <img src="{{ model_plot_url }}" alt="Model Visualization" class="img-fluid" width="800" height="800">
+</div>
+
+    <div class="text-center mt-4">
+        <a href="{% url 'opensees:input' project.pk task.pk %}" class="btn btn-primary">
+            Run Another Analysis
+        </a>
+    </div>
+</div>
+{% endblock %}

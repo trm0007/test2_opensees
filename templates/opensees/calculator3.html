@@ -1,0 +1,290 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="mb-4">Calculator 3: Division</h2>
+    
+    {% include "opensees/calculator_nav.html" %}
+    
+    <form method="post">
+        {% csrf_token %}
+        <!-- Analysis Parameters Section -->
+        <div class="form-row">
+            <div class="col-md-12">
+                <div id="material_props" class="mt-4">
+                    <h4>Analysis Parameters</h4>
+                    <div class="form-group">
+                        <label for="analysis_parameters">Analysis Parameters (JSON format):</label>
+                        <textarea class="form-control" id="analysis_parameters" name="analysis_parameters" rows="15" required>
+# ========================
+# INPUT VARIABLES
+# ========================
+
+advanced_materials = {
+    "32mpa_concrete": Concrete(
+        name="32 MPa Concrete",
+        density=2.4e-6,
+        stress_strain_profile=ConcreteLinear(elastic_modulus=30.1e3),
+        ultimate_stress_strain_profile=RectangularStressBlock(
+            compressive_strength=32,
+            alpha=0.802,
+            gamma=0.89,
+            ultimate_strain=0.003,
+        ),
+        flexural_tensile_strength=3.4,
+        colour="lightgrey",
+    ),
+    "500mpa_steel": SteelBar(
+        name="500 MPa Steel",
+        density=7.85e-6,
+        stress_strain_profile=SteelElasticPlastic(
+            yield_strength=500,
+            elastic_modulus=200e3,
+            fracture_strain=0.05,
+        ),
+        colour="red",
+    )
+}
+
+# Geometry Definitions
+geometry_definitions = {
+    "main_rect": {
+        "type": "polygon",
+        "points": [(0, 0), (300, 0), (300, 450), (0, 450)],
+        "material": "32mpa_concrete",
+        "holes": [
+            # {"type": "circle", "radius": 12, "center": (150, 40), "n_points": 20},
+            # {"type": "circle", "radius": 8, "center": (150, 120), "n_points": 16},
+            # {"type": "circle", "radius": 10, "center": (50, 100), "n_points": 18},
+            # {"type": "polygon", "points": [(250, 140), (265, 125), (280, 140), (265, 155)]}
+        ]
+    },
+    # "steel_column": {
+    #     "type": "circle",
+    #     "radius": 40,
+    #     "center": (80, 60),
+    #     "n_points": 30,
+    #     "material": "500mpa_steel",
+    #     "holes": [
+    #         {"type": "polygon", "points": [(70, 55), (90, 55), (80, 70)]}
+    #     ]
+    # },
+    # "aluminum_hex": {
+    #     "type": "polygon",
+    #     "points": [(220+35*np.cos(a), 60+35*np.sin(a)) for a in np.linspace(0, 2*np.pi, 7)[:-1]],
+    #     "material": "32mpa_concrete",  # replaced aluminum_alloy
+    #     "holes": [
+    #         {"type": "rectangle", "points": [(210, 50), (230, 50), (230, 70), (210, 70)]}
+    #     ]
+    # },
+    # "inner_steel": {
+    #     "type": "circle",
+    #     "radius": 15,
+    #     "center": (220, 60),
+    #     "n_points": 20,
+    #     "material": "500mpa_steel"  # replaced structural_steel
+    # }
+}
+
+# Rebar Definitions
+rebar_definitions = [
+    {"position": (20, 20), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (280, 20), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (20, 410), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (280, 410), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (150, 20), "radius": 12.5, "n_points": 10, "material": "500mpa_steel"},
+    {"position": (150, 410), "radius": 12.5, "n_points": 10, "material": "500mpa_steel"}
+]
+
+load_data = {
+    "n": 50000,
+    "mxx": -5000000,
+    "m22": 2500000,
+    "mzz": 500000,
+    "vx": 10000,
+    "vy": 5000
+}
+mesh_size = 8
+
+
+                        </textarea>
+                    </div>
+                    <small class="form-text text-muted">
+                        Enter all analysis parameters in JSON format. Includes material properties, geometry definitions,
+                        analysis parameters, and load data.
+                    </small>
+                </div>
+            </div>
+        </div>
+        <button type="submit" class="btn btn-primary">Calculate Division</button>
+    </form>
+    
+    {% if result is not None %}
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Section Properties:</h4>
+        <pre>{{ result.properties|pprint }}</pre>
+    </div>
+
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Section Stresses:</h4>
+        <pre>{{ result.stresses|pprint }}</pre>
+    </div>
+
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Output Paths:</h4>
+        <pre>{{ result.output_paths|pprint }}</pre>
+    </div>
+    {% endif %}
+    
+
+ 
+<div class="mt-4 p-3 bg-light rounded">
+    <h4>Analysis Results:</h4>
+    <div class="row">
+        {% for name, url in result.images.items %}
+        <div class="col-md-6 mb-4">
+            <div class="card">
+                <div class="card-header">{{ name|title }}</div>
+                <div class="card-body">
+                    <img src="{{ url }}" alt="{{ name }}" class="img-fluid">
+                    <p class="mt-2 text-muted small">{{ url }}</p>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+
+
+     
+  
+  
+<div class="card" style="position: relative; padding: 20px; border: 1px solid #ccc; border-radius: 10px; font-family: monospace;">
+  <button onclick="copyCode(this)" style="position: absolute; top: 10px; right: 10px; padding: 5px 10px; font-size: 12px; cursor: pointer;">Copy</button>
+  
+  <div id="code-block">
+
+<pre>
+# ========================
+# INPUT VARIABLES
+# ========================
+
+advanced_materials = {
+    "32mpa_concrete": Concrete(
+        name="32 MPa Concrete",
+        density=2.4e-6,
+        stress_strain_profile=ConcreteLinear(elastic_modulus=30.1e3),
+        ultimate_stress_strain_profile=RectangularStressBlock(
+            compressive_strength=32,
+            alpha=0.802,
+            gamma=0.89,
+            ultimate_strain=0.003,
+        ),
+        flexural_tensile_strength=3.4,
+        colour="lightgrey",
+    ),
+    "500mpa_steel": SteelBar(
+        name="500 MPa Steel",
+        density=7.85e-6,
+        stress_strain_profile=SteelElasticPlastic(
+            yield_strength=500,
+            elastic_modulus=200e3,
+            fracture_strain=0.05,
+        ),
+        colour="red",
+    )
+}
+
+# Geometry Definitions
+geometry_definitions = {
+    "main_rect": {
+        "type": "polygon",
+        "points": [(0, 0), (300, 0), (300, 450), (0, 450)],
+        "material": "32mpa_concrete",
+        "holes": [
+            # {"type": "circle", "radius": 12, "center": (150, 40), "n_points": 20},
+            # {"type": "circle", "radius": 8, "center": (150, 120), "n_points": 16},
+            # {"type": "circle", "radius": 10, "center": (50, 100), "n_points": 18},
+            # {"type": "polygon", "points": [(250, 140), (265, 125), (280, 140), (265, 155)]}
+        ]
+    },
+    # "steel_column": {
+    #     "type": "circle",
+    #     "radius": 40,
+    #     "center": (80, 60),
+    #     "n_points": 30,
+    #     "material": "500mpa_steel",
+    #     "holes": [
+    #         {"type": "polygon", "points": [(70, 55), (90, 55), (80, 70)]}
+    #     ]
+    # },
+    # "aluminum_hex": {
+    #     "type": "polygon",
+    #     "points": [(220+35*np.cos(a), 60+35*np.sin(a)) for a in np.linspace(0, 2*np.pi, 7)[:-1]],
+    #     "material": "32mpa_concrete",  # replaced aluminum_alloy
+    #     "holes": [
+    #         {"type": "rectangle", "points": [(210, 50), (230, 50), (230, 70), (210, 70)]}
+    #     ]
+    # },
+    # "inner_steel": {
+    #     "type": "circle",
+    #     "radius": 15,
+    #     "center": (220, 60),
+    #     "n_points": 20,
+    #     "material": "500mpa_steel"  # replaced structural_steel
+    # }
+}
+
+# Rebar Definitions
+rebar_definitions = [
+    {"position": (20, 20), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (280, 20), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (20, 410), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (280, 410), "radius": 10, "n_points": 12, "material": "500mpa_steel"},
+    {"position": (150, 20), "radius": 12.5, "n_points": 10, "material": "500mpa_steel"},
+    {"position": (150, 410), "radius": 12.5, "n_points": 10, "material": "500mpa_steel"}
+]
+
+load_data = {
+    "n": 50000,
+    "mxx": -5000000,
+    "m22": 2500000,
+    "mzz": 500000,
+    "vx": 10000,
+    "vy": 5000
+}
+mesh_size = 8
+
+
+</pre>
+  </div>
+</div>
+
+
+
+
+
+
+
+
+
+
+    <div class="mt-4">
+        <p>Logged in as: <strong>{{ user.username }}</strong></p>
+        <p>Project: <strong>{{ project.name }}</strong></p>
+        <p>Task: <strong>{{ task.name }}</strong></p>
+    </div>
+</div>
+
+<script>
+  function copyCode(button) {
+    const code = button.parentElement.querySelector('#code-block').innerText;
+    navigator.clipboard.writeText(code).then(() => {
+      button.textContent = "Copied!";
+      setTimeout(() => button.textContent = "Copy", 2000);
+    });
+  }
+</script>
+
+{% endblock %}

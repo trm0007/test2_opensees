@@ -1,0 +1,40 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+<div class="container">
+    <h2 class="mb-4">Calculator 1: Multiplication</h2>
+    
+    <div class="mb-4">
+        <a href="{% url 'opensees:calculator1' project.pk task.pk %}" class="btn btn-outline-primary">Calculator 1</a>
+        <a href="{% url 'opensees:calculator2' project.pk task.pk %}" class="btn btn-outline-secondary">Calculator 2</a>
+        <a href="{% url 'opensees:calculator3' project.pk task.pk %}" class="btn btn-outline-secondary">Calculator 3</a>
+		<a href="{% url 'opensees:input' project.pk task.pk %}" class="btn btn-outline-secondary">← Back to Input</a>    
+	</div>
+    
+    <form method="post">
+        {% csrf_token %}
+        <div class="form-group">
+            <label for="input1">First Number</label>
+            <input type="number" class="form-control" id="input1" name="input1" step="any" required>
+        </div>
+        <div class="form-group">
+            <label for="input2">Second Number</label>
+            <input type="number" class="form-control" id="input2" name="input2" step="any" required>
+        </div>
+        <button type="submit" class="btn btn-primary">Calculate</button>
+    </form>
+    
+    {% if result is not None %}
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Result:</h4>
+        <p class="lead">{{ result }}</p>
+    </div>
+    {% endif %}
+    
+    <div class="mt-4">
+        <p>Logged in as: <strong>{{ user.username }}</strong></p>
+        <p>Project: <strong>{{ project.name }}</strong></p>
+        <p>Task: <strong>{{ task.name }}</strong></p>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,247 @@
+
+{% extends "opensees/base.html" %}
+
+{% block content %}
+
+<div class="container">
+    <h1 class="text-center mb-4">Analysis Results - HTML Format</h1>
+    
+    {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+    
+    {% if success %}
+        <!-- Excel Download Buttons for All Combinations -->
+        <div class="mb-4">
+            <h4>Download All Excel Files:</h4>
+            <div class="row">
+                {% for name, filename in all_excel_files.items %}
+                    <div class="col-md-4 mb-2">
+                        <a href="{% url 'opensees:download_excel' project.pk task.pk filename %}" 
+                           class="btn btn-primary btn-sm w-100" download>
+                            {{ name|title }}
+                        </a>
+                    </div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <!-- Navigation tabs for load combinations -->
+        <ul class="nav nav-tabs mb-4" id="comboTabs" role="tablist">
+            {% for combo_name in combo_folders %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link {% if forloop.first %}active{% endif %}" 
+                            id="{{ combo_name }}-tab" 
+                            data-bs-toggle="tab" 
+                            data-bs-target="#{{ combo_name }}-content" 
+                            type="button" 
+                            role="tab" 
+                            aria-controls="{{ combo_name }}-content" 
+                            aria-selected="{% if forloop.first %}true{% else %}false{% endif %}">
+                        {{ combo_name|title }}
+                    </button>
+                </li>
+            {% endfor %}
+        </ul>
+        
+        <!-- Tab content for each load combination -->
+        <div class="tab-content" id="comboTabContent">
+            {% for combo_name, combo_data in combo_results.items %}
+                <div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
+                     id="{{ combo_name }}-content" 
+                     role="tabpanel" 
+                     aria-labelledby="{{ combo_name }}-tab">
+                    
+                    <h3 class="mb-4">{{ combo_name|title }} Results</h3>
+                    
+                    <!-- Excel downloads for this combination -->
+                    <div class="mb-3">
+                        <h5>Download Excel Files for {{ combo_name|title }}:</h5>
+                        {% for name, filename in combo_data.excel_files.items %}
+                            <a href="{% url 'opensees:download_excel' project.pk task.pk filename %}" 
+                               class="btn btn-outline-primary btn-sm me-2 mb-2" download>
+                                {{ name|title }} Excel
+                            </a>
+                        {% endfor %}
+                    </div>
+                    
+                    <!-- Accordion for different result types -->
+                    <div class="accordion" id="accordion{{ combo_name }}">
+                        
+                        <!-- Nodal Results -->
+                        {% if 'reactions' in combo_data.html_tables or 'displacements' in combo_data.html_tables %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="nodal{{ combo_name }}">
+                                <button class="accordion-button collapsed" type="button" 
+                                        data-bs-toggle="collapse" 
+                                        data-bs-target="#nodalResults{{ combo_name }}" 
+                                        aria-expanded="false" 
+                                        aria-controls="nodalResults{{ combo_name }}">
+                                    Nodal Results
+                                </button>
+                            </h2>
+                            <div id="nodalResults{{ combo_name }}" 
+                                 class="accordion-collapse collapse" 
+                                 aria-labelledby="nodal{{ combo_name }}" 
+                                 data-bs-parent="#accordion{{ combo_name }}">
+                                <div class="accordion-body">
+                                    {% if 'reactions' in combo_data.html_tables %}
+                                        <h6>Reactions</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.reactions|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'displacements' in combo_data.html_tables %}
+                                        <h6>Displacements</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.displacements|safe }}
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Beam Results -->
+                        {% if 'beam_forces' in combo_data.html_tables or 'beam_stresses' in combo_data.html_tables or 'beam_strains' in combo_data.html_tables or 'beam_deflections' in combo_data.html_tables %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="beam{{ combo_name }}">
+                                <button class="accordion-button collapsed" type="button" 
+                                        data-bs-toggle="collapse" 
+                                        data-bs-target="#beamResults{{ combo_name }}" 
+                                        aria-expanded="false" 
+                                        aria-controls="beamResults{{ combo_name }}">
+                                    Beam Results
+                                </button>
+                            </h2>
+                            <div id="beamResults{{ combo_name }}" 
+                                 class="accordion-collapse collapse" 
+                                 aria-labelledby="beam{{ combo_name }}" 
+                                 data-bs-parent="#accordion{{ combo_name }}">
+                                <div class="accordion-body">
+                                    {% if 'beam_forces' in combo_data.html_tables %}
+                                        <h6>Beam Forces</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_forces|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_stresses' in combo_data.html_tables %}
+                                        <h6>Beam Stresses</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_stresses|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_strains' in combo_data.html_tables %}
+                                        <h6>Beam Strains</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_strains|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_deflections' in combo_data.html_tables %}
+                                        <h6>Beam Deflections</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_deflections|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_relative_deflections' in combo_data.html_tables %}
+                                        <h6>Beam Relative Deflections</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_relative_deflections|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_slopes' in combo_data.html_tables %}
+                                        <h6>Beam Slopes</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_slopes|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_max_min_deflections' in combo_data.html_tables %}
+                                        <h6>Beam Max/Min Deflections</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_max_min_deflections|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_max_min_slopes' in combo_data.html_tables %}
+                                        <h6>Beam Max/Min Slopes</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_max_min_slopes|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'beam_properties' in combo_data.html_tables %}
+                                        <h6>Beam Properties</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.beam_properties|safe }}
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Shell Results -->
+                        {% if 'shell_forces' in combo_data.html_tables or 'shell_stresses' in combo_data.html_tables or 'shell_strains' in combo_data.html_tables %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="shell{{ combo_name }}">
+                                <button class="accordion-button collapsed" type="button" 
+                                        data-bs-toggle="collapse" 
+                                        data-bs-target="#shellResults{{ combo_name }}" 
+                                        aria-expanded="false" 
+                                        aria-controls="shellResults{{ combo_name }}">
+                                    Shell Results
+                                </button>
+                            </h2>
+                            <div id="shellResults{{ combo_name }}" 
+                                 class="accordion-collapse collapse" 
+                                 aria-labelledby="shell{{ combo_name }}" 
+                                 data-bs-parent="#accordion{{ combo_name }}">
+                                <div class="accordion-body">
+                                    {% if 'shell_forces' in combo_data.html_tables %}
+                                        <h6>Shell Forces</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.shell_forces|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'shell_stresses' in combo_data.html_tables %}
+                                        <h6>Shell Stresses</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.shell_stresses|safe }}
+                                        </div>
+                                    {% endif %}
+                                    
+                                    {% if 'shell_strains' in combo_data.html_tables %}
+                                        <h6>Shell Strains</h6>
+                                        <div class="table-responsive mb-4">
+                                            {{ combo_data.html_tables.shell_strains|safe }}
+                                        </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+    
+    <div class="mt-4">
+        <a href="{% url 'opensees:run_analysis' project.pk task.pk %}" class="btn btn-secondary">Back to Analysis</a>
+    </div>
+</div>
+
+
+<!-- Bootstrap JS for tabs and accordion functionality -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+{% endblock %}
+
+

@@ -1,0 +1,30 @@
+{% extends 'myapp/base.html' %}
+{% block title %}My Projects{% endblock %}
+{% block content %}
+<h1>My Projects</h1>
+<a href="{% url 'project_create' %}" class="btn btn-success mb-3">Create New Project</a>
+<div class="list-group">
+    {% for project in projects %}
+    <div class="list-group-item">
+        <div class="d-flex w-100 justify-content-between">
+            <h5 class="mb-1">{{ project.title }}</h5>
+            <small>{{ project.created_at|date:"M d, Y" }}</small>
+        </div>
+        <p class="mb-1">{{ project.description|truncatechars:100 }}</p>
+        <div class="btn-group btn-group-sm">
+            <a href="{% url 'project_detail' project.pk %}" class="btn btn-primary">View</a>
+            <a href="{% url 'project_update' project.pk %}" class="btn btn-secondary">Edit</a>
+            <form action="{% url 'project_delete' project.pk %}" method="post" style="display: inline;">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger" onclick="return confirm('Are you sure you want to delete this project?')">Delete</button>
+            </form>
+            <a href="{% url 'task_list' project.pk %}" class="btn btn-info">Tasks</a>
+        </div>
+    </div>
+    {% empty %}
+    <div class="list-group-item">
+        <p>No projects yet. <a href="{% url 'project_create' %}">Create your first project</a></p>
+    </div>
+    {% endfor %}
+</div>
+{% endblock %}

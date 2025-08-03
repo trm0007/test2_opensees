@@ -1,0 +1,156 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+<div class="container">
+    <h1 class="text-center mb-4">Structural Analysis Input</h1>
+    
+	<!-- Calculator Navigation -->
+    {% include "opensees/calculator_nav.html" %}
+
+    {% if error %}
+        <div class="alert alert-danger">{{ error }}</div>
+    {% endif %}
+    
+    <form method="post" action="{% url 'opensees:run_analysis' project.pk task.pk %}">
+        {% csrf_token %}
+        <div class="form-group">
+            <label for="input_data">OpenSees Script</label>
+            <textarea class="form-control" id="input_data" name="input_data" rows="30" 
+                    style="font-family: monospace; white-space: pre;">
+
+{% include "opensees/data.html" %}
+
+</textarea>
+        </div>
+        <button type="submit" class="btn btn-primary">Run Analysis</button>
+    </form>
+
+    <!-- Convert to HTML Form -->
+    <form method="post" action="{% url 'opensees:convert_to_html' project.pk task.pk %}" class="mt-4">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-success">Convert to HTML</button>
+    </form>
+    
+
+
+
+
+
+{% if result.success %}
+    <!-- Analysis Results Section -->
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Analysis Summary:</h4>
+        <div class="row">
+            <div class="col-md-6">
+                <p><strong>Output Directory:</strong> {{ result.output_directory }}</p>
+                <p><strong>Generated Files:</strong> {{ result.output_files|length }}</p>
+                <p><strong>Generated Images:</strong> {{ result.images|length }}</p>
+            </div>
+            <div class="col-md-6">
+                <h6>Generated Files:</h6>
+                <ul class="list-unstyled small">
+                    {% for file in result.output_files %}
+                    <li>• {{ file }}</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gravity Analysis Results -->
+    {% if result.analysis_results.gravity %}
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Gravity Analysis Results:</h4>
+        {% if result.analysis_results.gravity.error %}
+            <div class="alert alert-danger">
+                <strong>Error:</strong> {{ result.analysis_results.gravity.error }}
+            </div>
+        {% else %}
+            <p class="text-success">✓ Gravity analysis completed successfully</p>
+            <small class="text-muted">Results saved to JSON files in output directory</small>
+            {{ result.analysis_results.gravity }}
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- Response Spectrum Analysis Results -->
+    {% if result.analysis_results.rsa %}
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Response Spectrum Analysis Results:</h4>
+        {% if result.analysis_results.rsa.error %}
+            <div class="alert alert-danger">
+                <strong>Error:</strong> {{ result.analysis_results.rsa.error }}
+            </div>
+        {% else %}
+            <p class="text-success">✓ Response spectrum analysis completed successfully</p>
+            {% if result.analysis_results.rsa.modal_properties %}
+            <div class="row">
+                <div class="col-md-6">
+                    <h6>Modal Properties:</h6>
+                    <ul class="small">
+                        {% for period in result.analysis_results.rsa.modal_properties.periods %}
+                        <li>Mode {{ forloop.counter }}: T = {{ period|floatformat:4 }} s</li>
+                        {% endfor %}
+                    </ul>
+                </div>
+            </div>
+            {% endif %}
+        {% endif %}
+    </div>
+    {% endif %}
+
+    <!-- Generated Images/Plots -->
+    {% if result.images %}
+    <div class="mt-4 p-3 bg-light rounded">
+        <h4>Generated Plots and Visualizations:</h4>
+        <div class="row">
+            {% for name, url in result.images.items %}
+            <div class="col-md-6 mb-4">
+                <div class="card">
+                    <div class="card-header">
+                        <strong>{{ name}}</strong>
+                    </div>
+                    <div class="card-body">
+                        <img src="{{ url }}" alt="{{ name }}" class="img-fluid" style="max-width: 100%; height: auto;">
+                        <p class="mt-2 text-muted small">File: {{ name }}</p>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% endif %}
+
+{% elif result.success == False and result.error %}
+    <!-- Error Display -->
+    <div class="mt-4 p-3 bg-danger text-white rounded">
+        <h4>Analysis Error:</h4>
+        <p><strong>Error:</strong> {{ result.error }}</p>
+        {% if result.traceback %}
+        <details>
+            <summary>Show detailed traceback</summary>
+            <pre class="mt-2 text-white">{{ result.traceback }}</pre>
+        </details>
+        {% endif %}
+    </div>
+
+{% endif %}
+
+
+
+
+
+
+
+
+
+
+<div class="mt-4">
+        <h4>Example Structure</h4>
+        <pre>model("basic","-ndm",3,"-ndf",6)
+            {% include "opensees/data.html" %}
+
+        </pre>
+    </div>
+</div>
+{% endblock %}
