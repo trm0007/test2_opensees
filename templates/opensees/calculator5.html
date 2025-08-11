@@ -5,14 +5,7 @@
     <h2 class="mb-4">Calculator 5: Wind Analysis</h2>
     
     <!-- Navigation -->
-    <div class="mb-4">
-        <a href="{% url 'opensees:calculator1' project.pk task.pk %}" class="btn btn-outline-secondary">Model Generator</a>
-        <a href="{% url 'opensees:calculator2' project.pk task.pk %}" class="btn btn-outline-secondary">Section Properties</a>
-        <a href="{% url 'opensees:calculator3' project.pk task.pk %}" class="btn btn-outline-secondary">Concrete Properties</a>
-        <a href="{% url 'opensees:calculator4' project.pk task.pk %}" class="btn btn-outline-secondary">Seismic Analysis</a>
-        <a href="{% url 'opensees:calculator5' project.pk task.pk %}" class="btn btn-outline-primary">Wind Analysis</a>
-        <a href="{% url 'opensees:input' project.pk task.pk %}" class="btn btn-outline-secondary">← Back to Input</a>
-    </div>
+    {% include "opensees/calculator_nav.html" %}
     
     <form method="post" class="mb-4">
         {% csrf_token %}

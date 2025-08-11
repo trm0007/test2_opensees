@@ -46,21 +46,15 @@ nd_materials = [
 # =============================================
 # 2. SECTION PROPERTIES
 # Store section properties as lists with the format:
-# [section_tag, type, A, Iy, Iz, J, B, H, t]
+# [section_tag, type, A, Iy, Iz, J, B, H, t, E, G]
 # =============================================
 section_properties = [
     # tag, type,       A,    Iy,       Iz,       J,        B,    H,    t
-    [1,    'rectangular', 0.09, 0.000675, 0.000675, 0.00114075, 0.3, 0.3, None],
-    [3,    'rectangular', 0.09, 0.000675, 0.000675, 0.00114075, 0.3, 0.3, None]  # Aggregator uses same properties
+    [1,    'rectangular', 0.09, 0.000675, 0.000675, 0.00114075, 0.3, 0.3, None, 30000000000.0, 12500000000.0],
+    [3,    'rectangular', 0.09, 0.000675, 0.000675, 0.00114075, 0.3, 0.3, None, 30000000000.0, 12500000000.0]  # Aggregator uses same properties
 ]
 
-# Elastic section definition using the properties from the list
-elastic_section = ["Elastic", 1, 30000000000.0, 
-                    section_properties[0][2],  # A
-                    section_properties[0][4],  # Iz
-                    section_properties[0][3],  # Iy
-                    12500000000.0,            # G
-                    section_properties[0][5]] # J
+
 
 # Aggregator section
 aggregator_section = [

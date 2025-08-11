@@ -1,3 +1,28 @@
+import ast
+from subprocess import PIPE, Popen
+from venv import logger
+from django.shortcuts import render, redirect, get_object_or_404
+from django.contrib.auth.decorators import login_required
+from django.http import Http404
+import matplotlib
+import numpy as np
+
+from opensees.load_combinations import apply_structural_loads, get_combination_loads
+from opensees.functions import *
+# from opensees.wall_meshing import generate_model_with_shells
+matplotlib.use('Agg')  # Set the backend to non-interactive
+import matplotlib.pyplot as plt
+from myapp.models import Project, Task
+from .forms import *
+from .utils import *
+import json
+import xlwt
+from datetime import datetime
+
+
+
+
+
 import datetime
 import os
 from matplotlib import pyplot as plt
@@ -9,73 +34,290 @@ from opsvis.secforces import section_force_distribution_3d
 import json
 import math
 from typing import Dict, List, Tuple
+from django.shortcuts import get_object_or_404
+from myapp.models import Project, Task
+from django.conf import settings
 
-def get_element_shapes(section_properties, elastic_section,aggregator_section, beam_integrations, frame_elements ):
-    """Directly extracts element shapes from provided data structures"""
+def calculate_Cs(S, T, TB, TC, TD, xi, Z, I, R):
+    # Calculate the damping correction factor mu
+    mu = (10 / (5 + xi)) ** 0.5
+    # Ensure mu is not smaller than 0.55
+    mu = max(mu, 0.55)
 
+    # Initialize Cs
+    Cs = 0
+
+    # Calculate Cs based on the given conditions
+    if 0 <= T <= TB:
+        Cs = S * (1 + (T / TB) * (2.5 * mu - 1))
+    elif TB < T <= TC:  # Fixed: changed from TB <= T to TB < T
+        Cs = 2.5 * S * mu
+    elif TC < T <= TD:  # Fixed: changed from TC <= T to TC < T
+        Cs = 2.5 * S * mu * (TC / T)
+    elif TD < T <= 4:   # Fixed: changed from TD <= T to TD < T
+        Cs = 2.5 * S * mu * (TC * TD / T ** 2)
+
+    Sa = (2 / 3) * (Z * I / R) * Cs
+    return Cs, Sa
+
+def CQC(mu, lambdas, dmp, scalf):
+    u = 0.0
+    ne = len(lambdas)
+    for i in range(ne):
+        for j in range(ne):
+            di = dmp[i]
+            dj = dmp[j]
+            bij = lambdas[i]/lambdas[j]
+            rho = ((8.0*math.sqrt(di*dj)*(di+bij*dj)*(bij**(3.0/2.0))) /
+                ((1.0-bij**2.0)**2.0 + 4.0*di*dj*bij*(1.0+bij**2.0) + 
+                4.0*(di**2.0 + dj**2.0)*bij**2.0))
+            u += scalf[i]*mu[i] * scalf[j]*mu[j] * rho
+    return math.sqrt(u)
+
+
+
+def calculate_reinforcement_with_spacing(Mu: float, d: float, fc: float, fy: float) -> Tuple[float, float, str]:
+    """
+    Calculate required reinforcement and spacing per ACI 318 (FPS units).
+    
+    Args:
+        Mu: Factored moment per unit width (lb-in/ft)
+        d: Effective depth (in)
+        fc: Concrete compressive strength (psi)
+        fy: Steel yield strength (psi)
+        
+    Returns:
+        Tuple containing:
+        - Required reinforcement area (in²/ft)
+        - Center-to-center bar spacing (in)
+        - Selected bar size
+    """
+    # Constants
+    phi = 0.9  # Strength reduction factor for flexure
+    beta1 = 0.85 if fc <= 4000 else max(0.65, 0.85 - 0.05*(fc-4000)/1000)
+    b = 12  # Unit width for calculation (12 in = 1 ft)
+    
+    # Calculate required Rn (moment parameter)
+    Rn = Mu / (phi * b * d**2)
+    
+    # Calculate required steel ratio
+    rho = (0.85 * fc / fy) * (1 - math.sqrt(1 - (2 * Rn) / (0.85 * fc)))
+    
+    # Check minimum reinforcement (ACI 7.6.1.1)
+    rho_min = max(0.0018, 3 * math.sqrt(fc) / fy)
+    rho = max(rho, rho_min)
+    
+    # Calculate required steel area (in²/ft)
+    As_req = rho * b * d
+    
+    # Check maximum reinforcement (ACI 21.2.2)
+    epsilon_t = 0.005  # Net tensile strain
+    rho_max = (0.85 * beta1 * fc / fy) * (epsilon_t / (epsilon_t + 0.002))
+    if rho > rho_max:
+        raise ValueError("Error: Reinforcement exceeds maximum allowed by ACI")
+    
+    # Available bar sizes (#3 to #6)
+    bar_sizes = {
+        '#3': 0.11,  # in²
+        # '#4': 0.20,
+        # '#5': 0.31,
+        # '#6': 0.44
+    }
+    
+    # Find the most economical bar size and spacing
+    selected_bar = None
+    for bar_size, bar_area in sorted(bar_sizes.items(), key=lambda x: x[1], reverse=True):
+        spacing = (bar_area * b) / As_req
+        
+        # Check minimum spacing requirements (ACI 25.2.1)
+        min_spacing = max(1,  # 1 inch minimum
+                         {'#3': 0.375, '#4': 0.5, '#5': 0.625, '#6': 0.75}[bar_size],  # Bar diameter
+                         1.33 * 0.75)  # 1.33 * max aggregate size (assume 3/4")
+        
+        if spacing >= min_spacing:
+            selected_bar = (bar_size, spacing)
+            break
+    
+    if not selected_bar:
+        # If no bar satisfies spacing requirements, use smallest bar at minimum spacing
+        bar_size = '#3'
+        bar_area = bar_sizes[bar_size]
+        min_spacing = max(1, 0.375, 1.33 * 0.75)
+        As_provided = (bar_area * b) / min_spacing
+        return (As_provided, min_spacing, bar_size)
+    
+    # Round spacing to nearest 1/2 inch for practicality
+    practical_spacing = round(selected_bar[1] * 2) / 2
+    
+    return (As_req, practical_spacing, selected_bar[0])
+
+def extract_shell_results(ele_tag):
+    """
+    Extract forces, stresses, and strains for a shell element
+    
+    Args:
+        ele_tag: Element tag
+        
+    Returns:
+        Dictionary containing shell results
+    """
+    # Initialize results
+    results = {
+        'forces': None,
+        'stresses': [],
+        'strains': []
+    }
+    
+    try:
+        # Get element responses
+        forces = ops.eleResponse(ele_tag, 'forces')       # Membrane and bending forces
+        stresses = ops.eleResponse(ele_tag, 'stresses')   # Stresses at integration points
+        strains = ops.eleResponse(ele_tag, 'strains')     # Strains at integration points
+        
+        # Organize forces (stress resultants)
+        if forces:
+            # Different shell elements might return different numbers of forces
+            force_results = {}
+            force_components = ['Nxx', 'Nyy', 'Nxy', 'Mxx', 'Myy', 'Mxy', 'Qxz', 'Qyz']
+            
+            for i, component in enumerate(force_components):
+                if i < len(forces):
+                    force_results[component] = float(forces[i])
+                else:
+                    force_results[component] = 0.0  # Default value if not available
+            
+            results['forces'] = force_results
+        
+        # Organize stresses (typically at integration points through thickness)
+        if stresses:
+            # Stresses are usually reported for each integration point
+            # Format can vary - we'll handle different cases
+            num_stress_components = len(stresses)
+            num_integration_points = num_stress_components // 5  # Most common case
+            
+            for ip in range(num_integration_points):
+                start_idx = ip * 5
+                end_idx = start_idx + 5
+                
+                if end_idx <= num_stress_components:
+                    stress_data = {
+                        'integration_point': ip + 1,
+                        'σ_xx': float(stresses[start_idx]),
+                        'σ_yy': float(stresses[start_idx + 1]),
+                        'τ_xy': float(stresses[start_idx + 2]),
+                        'τ_xz': float(stresses[start_idx + 3]) if (start_idx + 3) < num_stress_components else 0.0,
+                        'τ_yz': float(stresses[start_idx + 4]) if (start_idx + 4) < num_stress_components else 0.0
+                    }
+                    results['stresses'].append(stress_data)
+        
+        # Organize strains
+        if strains:
+            num_strain_components = len(strains)
+            num_integration_points = num_strain_components // 5  # Most common case
+            
+            for ip in range(num_integration_points):
+                start_idx = ip * 5
+                end_idx = start_idx + 5
+                
+                if end_idx <= num_strain_components:
+                    strain_data = {
+                        'integration_point': ip + 1,
+                        'ε_xx': float(strains[start_idx]),
+                        'ε_yy': float(strains[start_idx + 1]),
+                        'γ_xy': float(strains[start_idx + 2]),
+                        'γ_xz': float(strains[start_idx + 3]) if (start_idx + 3) < num_strain_components else 0.0,
+                        'γ_yz': float(strains[start_idx + 4]) if (start_idx + 4) < num_strain_components else 0.0
+                    }
+                    results['strains'].append(strain_data)
+                    
+    except Exception as e:
+        print(f"Error processing shell element {ele_tag}: {str(e)}")
+        # Return partial results if available
+        pass
+    
+    return results
+
+
+
+def get_element_shapes(model_data):
+    """
+    Extract element shapes from the model_data dictionary for visualization
+    
+    Args:
+        model_data (dict): The model data dictionary returned by create_structural_model()
+        
+    Returns:
+        dict: Dictionary mapping element tags to their shape definitions
+        Format: {ele_tag: ['shape_type', [dimensions]]}
+    """
+    
+    # Initialize the shape dictionary
+    element_shapes = {}
+    
+    # Extract needed components from model_data
+    section_properties = model_data['section_properties']
+    frame_elements = model_data['frame_elements']
+    beam_integrations = model_data['beam_integrations']
+    
+    # First create section shape mapping
     section_shapes = {}
-    for sec in section_properties:
-        tag = sec[0]
-        sec_type = sec[1].lower()  # Case-insensitive
+    for prop in section_properties:
+        tag = prop[0]
+        sec_type = prop[1].lower()  # Case-insensitive
         
         if sec_type == 'rectangular':
-            section_shapes[tag] = ['rect', [sec[6], sec[7]]]  # B, H
-            
+            section_shapes[tag] = ['rect', [prop[7], prop[8]]]  # B, H at indices 7,8
         elif sec_type == 'circular':
-            section_shapes[tag] = ['circ', [sec[6]]]  # D
-            
+            section_shapes[tag] = ['circ', [prop[7]]]  # D at index 7
         elif sec_type == 'i' or sec_type == 'wideflange':
             section_shapes[tag] = ['I', [
-                sec[6],  # B (flange width)
-                sec[7],  # H (total depth)
-                sec[8],  # tf (flange thickness)
-                sec[9]   # tw (web thickness)
+                prop[7],  # B (flange width)
+                prop[8],  # H (total depth)
+                prop[9],  # tf (flange thickness)
+                prop[10]  # tw (web thickness)
             ]]
-            
         elif sec_type == 'l' or sec_type == 'angle':
             section_shapes[tag] = ['L', [
-                sec[6],  # H (leg length)
-                sec[7],  # B (leg length)
-                sec[8]   # t (thickness)
+                prop[7],  # H (leg length)
+                prop[8],  # B (leg length)
+                prop[9]   # t (thickness)
             ]]
-            
         elif sec_type == 't':
             section_shapes[tag] = ['T', [
-                sec[6],  # B (flange width)
-                sec[7],  # H (total depth)
-                sec[8],  # tf (flange thickness)
-                sec[9]   # tw (stem thickness)
+                prop[7],  # B (flange width)
+                prop[8],  # H (total depth)
+                prop[9],  # tf (flange thickness)
+                prop[10]  # tw (stem thickness)
             ]]
-            
         elif sec_type == 'c' or sec_type == 'channel':
             section_shapes[tag] = ['C', [
-                sec[6],  # B (flange width)
-                sec[7],  # H (depth)
-                sec[8]   # t (thickness)
+                prop[7],  # B (flange width)
+                prop[8],  # H (depth)
+                prop[9]   # t (thickness)
             ]]
-            
         elif sec_type == 'tube' or sec_type == 'pipe':
             section_shapes[tag] = ['tube', [
-                sec[6],  # D (outer diameter)
-                sec[7]   # t (wall thickness)
+                prop[7],  # D (outer diameter)
+                prop[8]   # t (wall thickness)
             ]]
-            
         elif sec_type == 'box':
             section_shapes[tag] = ['box', [
-                sec[6],  # B (outer width)
-                sec[7],  # H (outer depth)
-                sec[8]   # t (wall thickness)
+                prop[7],  # B (outer width)
+                prop[8],  # H (outer depth)
+                prop[9]   # t (wall thickness)
             ]]
-            
+        elif sec_type == 'shell':
+            continue  # Skip shell sections
         else:
-            print(f"Warning: Unsupported section type '{sec[1]}' (tag: {tag})")
-            continue  # Skip unsupported sections
+            print(f"Warning: Unsupported section type '{sec_type}' (tag: {tag})")
+            continue
 
-    # Create mapping: {integration_tag: section_tag}
-    integration_to_section = {integ[1]: integ[2] for integ in beam_integrations}
+    # Create mapping between integration tags and section tags
+    integration_to_section = {}
+    for integ in beam_integrations:
+        integration_to_section[integ[1]] = integ[2]  # integ_tag -> section_tag
 
-    # Process elements
-    ele_shapes = {}
+    # Process frame elements to get their shapes
     for elem in frame_elements:
         ele_tag = elem[1]  # Element ID
         integ_tag = elem[5]  # Integration tag
@@ -83,13 +325,18 @@ def get_element_shapes(section_properties, elastic_section,aggregator_section, b
         if integ_tag in integration_to_section:
             sec_tag = integration_to_section[integ_tag]
             if sec_tag in section_shapes:
-                ele_shapes[ele_tag] = section_shapes[sec_tag]
-    
-    return ele_shapes
+                element_shapes[ele_tag] = section_shapes[sec_tag]
+            else:
+                print(f"Warning: No shape found for section tag {sec_tag} (element {ele_tag})")
+        else:
+            print(f"Warning: No section found for integration tag {integ_tag} (element {ele_tag})")
+
+    return element_shapes
+
 
 def extract_beam_results(ele_tag, nep, section_properties):
     """
-    Extract forces, stresses, and strains for a beam element using section properties list
+    Extract forces, stresses, strains, deflections, and slopes for a beam element using section properties list
     
     Args:
         ele_tag: Element tag
@@ -97,7 +344,8 @@ def extract_beam_results(ele_tag, nep, section_properties):
         section_properties: List of section properties [tag, type, A, Iy, Iz, J, B, H, t]
         
     Returns:
-        Dictionary containing beam results
+        Dictionary containing comprehensive beam results including forces, stresses, strains, 
+        deflections, slopes, and beam properties
         
     Raises:
         ValueError: If required section properties are missing
@@ -111,14 +359,17 @@ def extract_beam_results(ele_tag, nep, section_properties):
     # Find the section in our properties list
     section = None
     for sec in section_properties:
-        # if sec[0] == section_tag:
-        section = sec
-        break
+        if sec[1] != 'shell':  # Only frame sections
+
+            # if sec[0] == section_tag:
+            section = sec
+            break
     
     if section is None:
         raise ValueError(f"Section with tag {section} not found in section properties")
     
     # Extract properties from the list
+    section_tag = section[0]
     section_type = section[1]
     A = section[2]
     Iy = section[3]
@@ -249,13 +500,258 @@ def extract_beam_results(ele_tag, nep, section_properties):
             'γ_torsion': float(γ_torsion)
         })
     
+    # ====== NEW: DEFLECTION AND SLOPE CALCULATIONS ======
+    
+    # Get nodal displacements and rotations
+    node1_disp = ops.nodeDisp(node_tags[0])
+    node2_disp = ops.nodeDisp(node_tags[1])
+    
+    # Extract displacements and rotations at nodes
+    # Assuming 6 DOF per node: [ux, uy, uz, rx, ry, rz]
+    delta1_y = node1_disp[1]  # Y-displacement at start
+    delta1_z = node1_disp[2]  # Z-displacement at start
+    theta1_y = node1_disp[4]  # Y-rotation at start
+    theta1_z = node1_disp[5]  # Z-rotation at start
+    delta1_x = node1_disp[0]  # X-displacement at start (axial)
+    
+    delta2_y = node2_disp[1]  # Y-displacement at end
+    delta2_z = node2_disp[2]  # Z-displacement at end
+    delta2_x = node2_disp[0]  # X-displacement at end (axial)
+    
+    # Calculate flexural stiffnesses
+    EIy = E * Iy  # Flexural stiffness about Y-axis
+    EIz = E * Iz  # Flexural stiffness about Z-axis
+    EA = E * A    # Axial stiffness
+    
+    # Extract distributed loads from eload_data
+    w1_y = w2_y = 0.0  # Default to no distributed load
+    w1_z = w2_z = 0.0
+    p1 = p2 = 0.0      # Axial distributed loads
+    
+    if eload_data:
+        for load in eload_data:
+            if load[0] == '-beamUniform':
+                w1_y = w2_y = load[2]  # Uniform load in Y-direction
+                w1_z = w2_z = load[3]  # Uniform load in Z-direction
+    
+    # Calculate deflections and slopes at each evaluation point
+    deflection_results = []
+    slope_results = []
+    
+    # Lists to track max/min values
+    deflections_y = []
+    deflections_z = []
+    deflections_x = []
+    slopes_y = []
+    slopes_z = []
+    
+    for i in range(len(xl)):
+        x = xl[i]
+        
+        # Current internal forces at this location
+        V1_y = s[i,1]    # Shear force Y
+        V1_z = s[i,2]    # Shear force Z  
+        M1_y = s[i,4]    # Moment about Y
+        M1_z = s[i,5]    # Moment about Z
+        P1 = s[i,0]      # Axial force
+        
+        # Calculate deflections using beam theory functions
+        deflection_y = beam_deflection_y(x, V1_y, M1_z, P1, w1_y, w2_y, 
+                                       theta1_z, delta1_y, L, EIz, P_delta=False)
+        
+        deflection_z = beam_deflection_z(x, V1_z, M1_y, P1, w1_z, w2_z, 
+                                       theta1_y, delta1_z, L, EIy, P_delta=False)
+        
+        axial_deflection = beam_axial_deflection(x, delta1_x, P1, p1, p2, L, EA)
+        
+        # Calculate slopes
+        slope_y = beam_slope_y(x, V1_y, M1_z, P1, w1_y, w2_y, 
+                             theta1_z, delta1_y, L, EIz, P_delta=False)
+        
+        slope_z = beam_slope_z(x, V1_z, M1_y, P1, w1_z, w2_z, 
+                             theta1_y, delta1_z, L, EIy, P_delta=False)
+        
+        # Store results
+        deflection_results.append({
+            'position': float(x),
+            'deflection_y': float(deflection_y),
+            'deflection_z': float(deflection_z),
+            'deflection_x': float(axial_deflection),
+            'total_deflection': float(np.sqrt(deflection_y**2 + deflection_z**2))
+        })
+        
+        slope_results.append({
+            'position': float(x),
+            'slope_y': float(slope_y),
+            'slope_z': float(slope_z),
+            'total_slope': float(np.sqrt(slope_y**2 + slope_z**2))
+        })
+        
+        # Collect for max/min calculations
+        deflections_y.append(deflection_y)
+        deflections_z.append(deflection_z)
+        deflections_x.append(axial_deflection)
+        slopes_y.append(slope_y)
+        slopes_z.append(slope_z)
+    
+    # Calculate relative deflections (relative to start of beam)
+    relative_deflection_results = []
+    for i, defl in enumerate(deflection_results):
+        relative_deflection_results.append({
+            'position': defl['position'],
+            'relative_deflection_y': float(defl['deflection_y'] - delta1_y),
+            'relative_deflection_z': float(defl['deflection_z'] - delta1_z),
+            'relative_deflection_x': float(defl['deflection_x'] - delta1_x),
+            'relative_total_deflection': float(np.sqrt(
+                (defl['deflection_y'] - delta1_y)**2 + 
+                (defl['deflection_z'] - delta1_z)**2
+            ))
+        })
+    
+    # Calculate maximum and minimum deflections
+    max_min_deflections = {
+        'max_deflection_y': float(max(deflections_y)),
+        'min_deflection_y': float(min(deflections_y)),
+        'max_deflection_z': float(max(deflections_z)),
+        'min_deflection_z': float(min(deflections_z)),
+        'max_deflection_x': float(max(deflections_x)),
+        'min_deflection_x': float(min(deflections_x)),
+        'max_total_deflection': float(max([d['total_deflection'] for d in deflection_results])),
+        'max_relative_deflection_y': float(max([d['relative_deflection_y'] for d in relative_deflection_results])),
+        'min_relative_deflection_y': float(min([d['relative_deflection_y'] for d in relative_deflection_results])),
+        'max_relative_deflection_z': float(max([d['relative_deflection_z'] for d in relative_deflection_results])),
+        'min_relative_deflection_z': float(min([d['relative_deflection_z'] for d in relative_deflection_results])),
+        'max_relative_total_deflection': float(max([d['relative_total_deflection'] for d in relative_deflection_results]))
+    }
+    
+    # Calculate maximum and minimum slopes
+    max_min_slopes = {
+        'max_slope_y': float(max(slopes_y)),
+        'min_slope_y': float(min(slopes_y)),
+        'max_slope_z': float(max(slopes_z)),
+        'min_slope_z': float(min(slopes_z)),
+        'max_total_slope': float(max([s['total_slope'] for s in slope_results]))
+    }
+    
+    # Beam properties
+    beam_properties = {
+        'element_tag': int(ele_tag),
+        'section_tag': int(section_tag),
+        'node_tags': [int(node_tags[0]), int(node_tags[1])],
+        'length': float(L),
+        'section_type': section_type,
+        'cross_sectional_area': float(A),
+        'moment_of_inertia_y': float(Iy),
+        'moment_of_inertia_z': float(Iz),
+        'torsional_constant': float(J),
+        'width': float(B),
+        'height': float(H),
+        'thickness': float(t) if t is not None else None,
+        'material_properties': {
+            'youngs_modulus': float(E),
+            'shear_modulus': float(G),
+            'flexural_stiffness_y': float(EIy),
+            'flexural_stiffness_z': float(EIz),
+            'axial_stiffness': float(EA)
+        },
+        'boundary_conditions': {
+            'start_node_displacement': {
+                'x': float(delta1_x),
+                'y': float(delta1_y),
+                'z': float(delta1_z)
+            },
+            'start_node_rotation': {
+                'y': float(theta1_y),
+                'z': float(theta1_z)
+            },
+            'end_node_displacement': {
+                'x': float(delta2_x),
+                'y': float(delta2_y),
+                'z': float(delta2_z)
+            }
+        },
+        'distributed_loads': {
+            'transverse_y': float(w1_y),
+            'transverse_z': float(w1_z),
+            'axial_start': float(p1),
+            'axial_end': float(p2)
+        }
+    }
+    
     return {
+        'beam_properties': beam_properties,
         'length': float(L),
         'section_type': section_type,
         'forces': force_results,
         'stresses': stress_results,
-        'strains': strain_results
+        'strains': strain_results,
+        'deflections': deflection_results,
+        'relative_deflections': relative_deflection_results,
+        'slopes': slope_results,
+        'max_min_deflections': max_min_deflections,
+        'max_min_slopes': max_min_slopes
     }
+
+
+# Helper functions for deflection calculations
+def beam_slope_y(x, V1, M1, P1, w1, w2, theta1, delta1, L, EI, P_delta=False):
+    """Returns the slope of the elastic curve at any point `x` along the segment (Y-direction)."""
+    if P_delta:
+        delta_x = beam_deflection_y(x, V1, M1, P1, w1, w2, theta1, delta1, L, EI, P_delta)
+        return theta1 + (-V1*x**2/2 - w1*x**3/6 + x*(-M1 - P1*delta1 + P1*delta_x) + x**4*(w1 - w2)/(24*L))/EI
+    else:
+        return theta1 + (-V1*x**2/2 - w1*x**3/6 + x*(-M1) + x**4*(w1 - w2)/(24*L))/EI
+
+
+def beam_slope_z(x, V1, M1, P1, w1, w2, theta1, delta1, L, EI, P_delta=False):
+    """Returns the slope of the elastic curve at any point `x` along the segment (Z-direction)."""
+    if P_delta:
+        delta_x = beam_deflection_z(x, V1, M1, P1, w1, w2, theta1, delta1, L, EI, P_delta)
+        theta_x = theta1 - (-V1*x**2/2 - w1*x**3/6 + x*(M1 - P1*delta1 + P1*delta_x) + x**4*(w1 - w2)/(24*L))/EI
+    else:
+        theta_x = theta1 - (-V1*x**2/2 - w1*x**3/6 + x*M1 + x**4*(w1 - w2)/(24*L))/EI
+    return theta_x
+
+
+def beam_deflection_y(x, V1, M1, P1, w1, w2, theta1, delta1, L, EI, P_delta=False):
+    """Returns the deflection at a location on the segment (Y-direction)."""
+    if P_delta:
+        delta_x = delta1
+        d_delta = 1
+        while d_delta > 0.01: 
+            delta_last = delta_x
+            delta_x = delta1 - theta1*x + V1*x**3/(6*EI) + w1*x**4/(24*EI) - x**2*(-M1 - P1*delta1 + P1*delta_x)/(2*EI) - x**5*(w1 - w2)/(120*EI*L)
+            if delta_last != 0:
+                d_delta = abs(delta_x/delta_last - 1)
+            else:
+                if delta1 - delta_x == 0:
+                    break
+        return delta_x
+    else:
+        return delta1 - theta1*x + V1*x**3/(6*EI) + w1*x**4/(24*EI) - x**2*(-M1)/(2*EI) - x**5*(w1 - w2)/(120*EI*L)
+
+
+def beam_deflection_z(x, V1, M1, P1, w1, w2, theta1, delta1, L, EI, P_delta=False):
+    """Returns the deflection at a location on the segment (Z-direction)."""
+    if P_delta:
+        delta_x = delta1
+        d_delta = 1
+        while d_delta > 0.01:
+            delta_last = delta_x
+            delta_x = delta1 + theta1*x + V1*x**3/(6*EI) + w1*x**4/(24*EI) + x**2*(-M1 + P1*delta1 - P1*delta_x)/(2*EI) + x**5*(-w1 + w2)/(120*EI*L)
+            if delta_last != 0:
+                d_delta = abs(delta_x/delta_last - 1)
+            else:
+                if delta1 - delta_x == 0:
+                    break
+        return delta_x
+    else:
+        return delta1 + theta1*x + V1*x**3/(6*EI) + w1*x**4/(24*EI) + x**2*(-M1)/(2*EI) + x**5*(-w1 + w2)/(120*EI*L)
+
+
+def beam_axial_deflection(x, delta_x1, P1, p1, p2, L, EA):
+    """Returns the axial deflection at a location on the segment."""
+    return delta_x1 - 1/EA*(P1*x + p1*x**2/2 + (p2 - p1)*x**3/(6*L))
 
 # Function to calculate floor masses (COM and mass)
 def calculate_floor_masses(node_coords):
@@ -409,9 +905,51 @@ def extract_story_drifts(cqc_displacements, node_tags, story_heights):
     
     return story_drifts
 
+def save_opensees_script(filename, data, output_folder="post_processing"):
+    """Save analysis files based on extension"""
+    
+    # Create output directory if it doesn't exist
+    os.makedirs(output_folder, exist_ok=True)
+    
+    # Create full filepath
+    filepath = os.path.join(output_folder, filename)
+    
+    ext = os.path.splitext(filename)[1].lower()
 
-def calculate_base_and_story_shears(output_dir, modal_reactions, cqc_reactions, story_heights, eigs,
-                                  json_filepath='RSA_Base_Story_Shears.json'):
+    if ext == ".json":
+        with open(filepath, 'w') as f:
+            json.dump(data, f, indent=4)
+
+    elif ext == ".txt":
+        with open(filepath, 'w') as f:
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    f.write(f"{key}: {value}\n")
+            else:
+                f.write(str(data))
+
+    elif ext in [".xls", ".xlsx"]:
+        wb = xlwt.Workbook()
+        ws = wb.add_sheet('Data')
+        if isinstance(data, dict):
+            for row_idx, (key, value) in enumerate(data.items()):
+                ws.write(row_idx, 0, key)
+                ws.write(row_idx, 1, str(value))
+        wb.save(filepath)
+
+    elif ext in [".png", ".jpg", ".jpeg"]:
+        if isinstance(data, plt.Figure):
+            data.savefig(filepath, dpi=300, bbox_inches='tight')
+            plt.close(data)
+        else:
+            raise ValueError("Invalid image data")
+
+    else:
+        raise ValueError(f"Unsupported file extension: {ext}")
+
+    return filepath
+
+def calculate_base_and_story_shears(modal_reactions, cqc_reactions, story_heights, eigs, output_folder="post_processing"):
     """
     Calculate base shear and story shear forces from nodal reactions (both mode-wise and CQC-combined)
     
@@ -590,17 +1128,15 @@ def calculate_base_and_story_shears(output_dir, modal_reactions, cqc_reactions, 
                 shear_results['story_shears']['modal'][mode][story]['cumulative_Fx'] = cumulative_shear_x
                 shear_results['story_shears']['modal'][mode][story]['cumulative_Fy'] = cumulative_shear_y
     
-    # Save to JSON
-    json_filepath = os.path.join(output_dir, json_filepath)
-    with open(json_filepath, 'w') as f:
-        json.dump(shear_results, f, indent=4)
+    # Save to JSON using the proper file saving function
+    json_filename = 'RSA_Base_Story_Shears.json'
+    json_path = save_opensees_script(json_filename, shear_results, output_folder)
     
-    return shear_results
+    return shear_results, json_path
 
 
 
-def extract_and_combine_forces_multiple_sections(output_dir, JSON_FOLDER, section_properties, Tn, Sa, direction, eigs, dmp, scalf, 
-                                               num_sections=10, json_filepath='RSA_Forces_MultiSection.json'):
+def extract_and_combine_forces_multiple_sections(section_properties, Tn, Sa, direction, eigs, dmp, scalf, num_sections=10, output_folder="post_processing"):
     """
     Extract all member forces from RSA at multiple integration points and perform CQC combination
     
@@ -711,9 +1247,9 @@ def extract_and_combine_forces_multiple_sections(output_dir, JSON_FOLDER, sectio
             }
 
     # Save to JSON
-    json_filepath = os.path.join(output_dir, json_filepath)
-    with open(json_filepath, 'w') as f:
-        json.dump({
+    json_filename = 'RSA_Forces_MultiSection.json'
+    json_path = save_opensees_script(
+        json_filename, {
             'modal_forces': modal_forces,
             'cqc_forces': cqc_forces,
             'critical_forces': critical_forces,
@@ -721,31 +1257,31 @@ def extract_and_combine_forces_multiple_sections(output_dir, JSON_FOLDER, sectio
             'damping': dmp,
             'scaling_factors': scalf,
             'num_sections': num_sections
-        }, f, indent=4)
+        },
+        output_folder
+    )
     
-    
-    return modal_forces, cqc_forces, critical_forces
+    return modal_forces, cqc_forces, critical_forces, json_path
 
 
-def generate_structural_plots(OUTPUT_FOLDER,
-    load_combination,
-    section_properties,
-    elastic_section,
-    aggregator_section,
-    beam_integrations,
-    frame_elements):
-    """Generate structural model plots after analysis"""
+
+
+def generate_structural_plots(section_properties, elastic_section, aggregator_section, 
+                            beam_integrations, frame_elements, output_folder="post_processing"):
+    """Generate structural model plots after analysis with proper file saving"""
     import matplotlib.pyplot as plt
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
     import opsvis as opsv
+    import numpy as np
     
-    # Simple filepath structure
-    plots_folder = f"{OUTPUT_FOLDER}_{load_combination}_plots"
-    os.makedirs(plots_folder, exist_ok=True)
+    # Create figures
+    saved_images = []
     
-    # Model plot with shell elements
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    # =============================================
+    # 1. Model plot with shell elements (working)
+    # =============================================
+    fig1 = plt.figure(figsize=(10, 8))
+    ax = fig1.add_subplot(111, projection='3d')
 
     # Get all shell elements
     shell_elements = ops.getEleTags()
@@ -755,257 +1291,235 @@ def generate_structural_plots(OUTPUT_FOLDER,
         ele_nodes = ops.eleNodes(ele_tag)
         node_coords = np.array([ops.nodeCoord(node) for node in ele_nodes])
         
-        # Create a filled polygon for shell elements (if they have more than 2 nodes)
+        # Create a filled polygon for shell elements
         if len(node_coords) > 2:
             poly = Poly3DCollection([node_coords], alpha=0.5, linewidth=1, edgecolor='k')
-            poly.set_facecolor('yellow')  # Single color for all elements
+            poly.set_facecolor('yellow')
             ax.add_collection3d(poly)
 
     # Overlay the original model edges
     opsv.plot_model(element_labels=0, node_labels=0, ax=ax, fmt_model={'color': 'k', 'linewidth': 1})
-    plt.title(f"Model - {load_combination}")
-    filepath = os.path.join(plots_folder, f"model_{load_combination}.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
-    plt.close()
+    plt.title(f"Model")
     
-    # Deformation plot
-    plt.figure(figsize=(10, 8))
-    opsv.plot_model()
-    plt.title(f"Deformation - {load_combination}")
-    filepath = os.path.join(plots_folder, f"deformation_{load_combination}.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
-    plt.close()
+    # Save model plot
+    model_plot_path = save_opensees_script("model_plot.png", fig1, output_folder)
+    saved_images.append(model_plot_path)
+    plt.close(fig1)
     
-    # Load plot
-    plt.figure(figsize=(10, 8))
-    opsv.plot_load()
-    plt.title(f"Load - {load_combination}")
-    filepath = os.path.join(plots_folder, f"load_{load_combination}.png")
-    plt.savefig(filepath, dpi=300, bbox_inches='tight')
-    plt.close()
+    # =============================================
+    # 2. Deformation plot - FIXED
+    # =============================================
+    # Need to first run a deformation analysis to get results
+    try:
+        opsv.plot_defo()
+        plt.title("Deformation")
 
-    
+        # Save deformation plot
+        deformation_plot_path = save_opensees_script("deformation_plot.png", plt.gcf(), output_folder)
+        saved_images.append(deformation_plot_path)
+    except Exception as e:
+        print(f"Could not generate deformation plot: {str(e)}")
+        deformation_plot_path = None
 
-    ele_shapes = get_element_shapes(section_properties, elastic_section,aggregator_section, beam_integrations, frame_elements)
- 
-    print("ele_shapes11")
-    print(ele_shapes)
-
-    # Get all element tags
-    element_tags = ops.getEleTags()
-
-    # Plot the extruded shapes
-    plt.figure(figsize=(10, 8))
-    opsv.plot_extruded_shapes_3d(ele_shapes)
-    plt.title("Extruded Shapes")
-    filepath = os.path.join(plots_folder, f"extruded_shapes.png")
-    plt.savefig(filepath)
     plt.close()
 
-    print(f"All plots saved to {plots_folder}")
     
-    return plots_folder
+    # =============================================
+    # 3. Load plot - FIXED
+    # =============================================
+    try:
+        opsv.plot_load()
+        plt.title("Loads")
+
+        # Save load plot
+        load_plot_path = save_opensees_script("load_plot.png", plt.gcf(), output_folder)
+        saved_images.append(load_plot_path)
+    except Exception as e:
+        print(f"Could not generate load plot: {str(e)}")
+        load_plot_path = None
+
+    plt.close()
 
 
-def calculate_Cs(S, T, TB, TC, TD, xi, Z, I, R):
-    # Calculate the damping correction factor mu
-    mu = (10 / (5 + xi)) ** 0.5
-    # Ensure mu is not smaller than 0.55
-    mu = max(mu, 0.55)
-
-    # Initialize Cs
-    Cs = 0
-
-    # Calculate Cs based on the given conditions
-    if 0 <= T <= TB:
-        Cs = S * (1 + (T / TB) * (2.5 * mu - 1))
-    elif TB < T <= TC:  # Fixed: changed from TB <= T to TB < T
-        Cs = 2.5 * S * mu
-    elif TC < T <= TD:  # Fixed: changed from TC <= T to TC < T
-        Cs = 2.5 * S * mu * (TC / T)
-    elif TD < T <= 4:   # Fixed: changed from TD <= T to TD < T
-        Cs = 2.5 * S * mu * (TC * TD / T ** 2)
-
-    Sa = (2 / 3) * (Z * I / R) * Cs
-    return Cs, Sa
-
-def CQC(mu, lambdas, dmp, scalf):
-    u = 0.0
-    ne = len(lambdas)
-    for i in range(ne):
-        for j in range(ne):
-            di = dmp[i]
-            dj = dmp[j]
-            bij = lambdas[i]/lambdas[j]
-            rho = ((8.0*math.sqrt(di*dj)*(di+bij*dj)*(bij**(3.0/2.0))) /
-                ((1.0-bij**2.0)**2.0 + 4.0*di*dj*bij*(1.0+bij**2.0) + 
-                4.0*(di**2.0 + dj**2.0)*bij**2.0))
-            u += scalf[i]*mu[i] * scalf[j]*mu[j] * rho
-    return math.sqrt(u)
-
-def calculate_reinforcement_with_spacing(Mu: float, d: float, fc: float, fy: float) -> Tuple[float, float, str]:
-    """
-    Calculate required reinforcement and spacing per ACI 318 (FPS units).
-    
-    Args:
-        Mu: Factored moment per unit width (lb-in/ft)
-        d: Effective depth (in)
-        fc: Concrete compressive strength (psi)
-        fy: Steel yield strength (psi)
-        
-    Returns:
-        Tuple containing:
-        - Required reinforcement area (in²/ft)
-        - Center-to-center bar spacing (in)
-        - Selected bar size
-    """
-    # Constants
-    phi = 0.9  # Strength reduction factor for flexure
-    beta1 = 0.85 if fc <= 4000 else max(0.65, 0.85 - 0.05*(fc-4000)/1000)
-    b = 12  # Unit width for calculation (12 in = 1 ft)
-    
-    # Calculate required Rn (moment parameter)
-    Rn = Mu / (phi * b * d**2)
-    
-    # Calculate required steel ratio
-    rho = (0.85 * fc / fy) * (1 - math.sqrt(1 - (2 * Rn) / (0.85 * fc)))
-    
-    # Check minimum reinforcement (ACI 7.6.1.1)
-    rho_min = max(0.0018, 3 * math.sqrt(fc) / fy)
-    rho = max(rho, rho_min)
-    
-    # Calculate required steel area (in²/ft)
-    As_req = rho * b * d
-    
-    # Check maximum reinforcement (ACI 21.2.2)
-    epsilon_t = 0.005  # Net tensile strain
-    rho_max = (0.85 * beta1 * fc / fy) * (epsilon_t / (epsilon_t + 0.002))
-    if rho > rho_max:
-        raise ValueError("Error: Reinforcement exceeds maximum allowed by ACI")
-    
-    # Available bar sizes (#3 to #6)
-    bar_sizes = {
-        '#3': 0.11,  # in²
-        # '#4': 0.20,
-        # '#5': 0.31,
-        # '#6': 0.44
-    }
-    
-    # Find the most economical bar size and spacing
-    selected_bar = None
-    for bar_size, bar_area in sorted(bar_sizes.items(), key=lambda x: x[1], reverse=True):
-        spacing = (bar_area * b) / As_req
-        
-        # Check minimum spacing requirements (ACI 25.2.1)
-        min_spacing = max(1,  # 1 inch minimum
-                         {'#3': 0.375, '#4': 0.5, '#5': 0.625, '#6': 0.75}[bar_size],  # Bar diameter
-                         1.33 * 0.75)  # 1.33 * max aggregate size (assume 3/4")
-        
-        if spacing >= min_spacing:
-            selected_bar = (bar_size, spacing)
-            break
-    
-    if not selected_bar:
-        # If no bar satisfies spacing requirements, use smallest bar at minimum spacing
-        bar_size = '#3'
-        bar_area = bar_sizes[bar_size]
-        min_spacing = max(1, 0.375, 1.33 * 0.75)
-        As_provided = (bar_area * b) / min_spacing
-        return (As_provided, min_spacing, bar_size)
-    
-    # Round spacing to nearest 1/2 inch for practicality
-    practical_spacing = round(selected_bar[1] * 2) / 2
-    
-    return (As_req, practical_spacing, selected_bar[0])
-
-def extract_shell_results(ele_tag):
-    """
-    Extract forces, stresses, and strains for a shell element
-    
-    Args:
-        ele_tag: Element tag
-        
-    Returns:
-        Dictionary containing shell results
-    """
-    # Initialize results
-    results = {
-        'forces': None,
-        'stresses': [],
-        'strains': []
-    }
+    # =============================================
+    # 4. Extruded shapes plot - FIXED
+    # =============================================
+    fig4 = plt.figure(figsize=(10, 8))
+    ax4 = fig4.add_subplot(111, projection='3d')
     
     try:
-        # Get element responses
-        forces = ops.eleResponse(ele_tag, 'forces')       # Membrane and bending forces
-        stresses = ops.eleResponse(ele_tag, 'stresses')   # Stresses at integration points
-        strains = ops.eleResponse(ele_tag, 'strains')     # Strains at integration points
+        ele_shapes = get_element_shapes(
+            section_properties, 
+            elastic_section,
+            aggregator_section, 
+            beam_integrations, 
+            frame_elements
+        )
         
-        # Organize forces (stress resultants)
-        if forces:
-            # Different shell elements might return different numbers of forces
-            force_results = {}
-            force_components = ['Nxx', 'Nyy', 'Nxy', 'Mxx', 'Myy', 'Mxy', 'Qxz', 'Qyz']
-            
-            for i, component in enumerate(force_components):
-                if i < len(forces):
-                    force_results[component] = float(forces[i])
-                else:
-                    force_results[component] = 0.0  # Default value if not available
-            
-            results['forces'] = force_results
+        # Plot the extruded shapes
+        opsv.plot_extruded_shapes_3d(ele_shapes, ax=ax4)
+        plt.title("Extruded Shapes")
         
-        # Organize stresses (typically at integration points through thickness)
-        if stresses:
-            # Stresses are usually reported for each integration point
-            # Format can vary - we'll handle different cases
-            num_stress_components = len(stresses)
-            num_integration_points = num_stress_components // 5  # Most common case
-            
-            for ip in range(num_integration_points):
-                start_idx = ip * 5
-                end_idx = start_idx + 5
-                
-                if end_idx <= num_stress_components:
-                    stress_data = {
-                        'integration_point': ip + 1,
-                        'σ_xx': float(stresses[start_idx]),
-                        'σ_yy': float(stresses[start_idx + 1]),
-                        'τ_xy': float(stresses[start_idx + 2]),
-                        'τ_xz': float(stresses[start_idx + 3]) if (start_idx + 3) < num_stress_components else 0.0,
-                        'τ_yz': float(stresses[start_idx + 4]) if (start_idx + 4) < num_stress_components else 0.0
-                    }
-                    results['stresses'].append(stress_data)
-        
-        # Organize strains
-        if strains:
-            num_strain_components = len(strains)
-            num_integration_points = num_strain_components // 5  # Most common case
-            
-            for ip in range(num_integration_points):
-                start_idx = ip * 5
-                end_idx = start_idx + 5
-                
-                if end_idx <= num_strain_components:
-                    strain_data = {
-                        'integration_point': ip + 1,
-                        'ε_xx': float(strains[start_idx]),
-                        'ε_yy': float(strains[start_idx + 1]),
-                        'γ_xy': float(strains[start_idx + 2]),
-                        'γ_xz': float(strains[start_idx + 3]) if (start_idx + 3) < num_strain_components else 0.0,
-                        'γ_yz': float(strains[start_idx + 4]) if (start_idx + 4) < num_strain_components else 0.0
-                    }
-                    results['strains'].append(strain_data)
-                    
+        # Save extruded shapes plot
+        extruded_shapes_path = save_opensees_script("extruded_shapes.png", fig4, output_folder)
+        saved_images.append(extruded_shapes_path)
     except Exception as e:
-        print(f"Error processing shell element {ele_tag}: {str(e)}")
-        # Return partial results if available
-        pass
+        print(f"Could not generate extruded shapes plot: {str(e)}")
+        extruded_shapes_path = None
     
-    return results
+    plt.close(fig4)
+
+    # Filter out None values from failed plots
+    saved_images = [img for img in saved_images if img is not None]
+    print(f"Successfully generated {len(saved_images)} structural plots")
+    
+    return saved_images
 
 
-def extract_all_results(section_props, output_folder, num_points=5):
+# def extract_all_results(section_props, num_points=5, output_folder="post_processing"):
+#     """
+#     Extract complete analysis results including nodal reactions/displacements and element forces/stresses/strains
+    
+#     Args:
+#         section_props: Dictionary or list of section properties for beam elements
+#         output_folder: Path to folder where results will be saved
+#         num_points: Number of evaluation points per element for force/stress/strain calculations
+        
+#     Returns:
+#         Dictionary containing all analysis results
+#     Raises:
+#         ValueError: If model contains no nodes or elements
+#         OSError: If output folder cannot be created
+#     """
+
+
+#     # Get all nodes and elements
+#     all_node_tags = ops.getNodeTags()
+#     all_element_tags = ops.getEleTags()
+
+#     if not all_node_tags or not all_element_tags:
+#         raise ValueError("Model contains no nodes or elements")
+
+#     # Initialize results dictionary
+#     results = {
+#         "metadata": {
+#             "node_count": len(all_node_tags),
+#             "element_count": len(all_element_tags),
+#             "force_points_per_element": num_points,
+#             "timestamp": str(datetime.datetime.now())
+#         },
+#         "nodal_results": {
+#             "reactions": {},
+#             "displacements": {}
+#         },
+#         "element_results": {
+#             "beam": {
+#                 "forces": {},
+#                 "stresses": {},
+#                 "strains": {}
+#             },
+#             "shell": {
+#                 "forces": {},
+#                 "stresses": {},
+#                 "strains": {}
+#             },
+#             "other": {
+#                 "forces": {},
+#                 "stresses": {},
+#                 "strains": {}
+#             }
+#         }
+#     }
+
+#     # Nodal results
+#     print("Extracting nodal results...")
+#     for node_tag in all_node_tags:
+#         try:
+#             results["nodal_results"]["reactions"][node_tag] = {
+#                 "FX": float(ops.nodeReaction(node_tag)[0]),
+#                 "FY": float(ops.nodeReaction(node_tag)[1]),
+#                 "FZ": float(ops.nodeReaction(node_tag)[2]),
+#                 "MX": float(ops.nodeReaction(node_tag)[3]),
+#                 "MY": float(ops.nodeReaction(node_tag)[4]),
+#                 "MZ": float(ops.nodeReaction(node_tag)[5])
+#             }
+#             results["nodal_results"]["displacements"][node_tag] = {
+#                 "UX": float(ops.nodeDisp(node_tag)[0]),
+#                 "UY": float(ops.nodeDisp(node_tag)[1]),
+#                 "UZ": float(ops.nodeDisp(node_tag)[2]),
+#                 "RX": float(ops.nodeDisp(node_tag)[3]),
+#                 "RY": float(ops.nodeDisp(node_tag)[4]),
+#                 "RZ": float(ops.nodeDisp(node_tag)[5])
+#             }
+#         except Exception as e:
+#             print(f"Error processing node {node_tag}: {str(e)}")
+#             continue
+
+#     # Element results
+#     print("Extracting element results...")
+#     for elem_tag in all_element_tags:
+#         ele_type = ops.eleType(elem_tag)
+        
+#         try:
+#             # Method 2: Or use setdefault (more concise)
+#             results["element_results"]["beam"].setdefault("deflections", {})
+#             results["element_results"]["beam"].setdefault("relative_deflections", {})
+#             results["element_results"]["beam"].setdefault("slopes", {})
+#             results["element_results"]["beam"].setdefault("max_min_deflections", {})
+#             results["element_results"]["beam"].setdefault("max_min_slopes", {})
+#             results["element_results"]["beam"].setdefault("beam_properties", {})
+#             results["element_results"]["beam"].setdefault("element_info", {})
+
+#             # Process based on element type
+#             if 'beam' in ele_type.lower() or 'ForceBeamColumn' in ele_type:
+#                 beam_res = extract_beam_results(
+#                     ele_tag=elem_tag,
+#                     nep=num_points,
+#                     section_properties=section_props
+#                 )
+                
+#                 # results["element_results"]["beam"]["forces"][elem_tag] = beam_res['forces']
+#                 # results["element_results"]["beam"]["stresses"][elem_tag] = beam_res['stresses']
+#                 # results["element_results"]["beam"]["strains"][elem_tag] = beam_res['strains']
+#                 # Store all beam analysis results
+#                 results["element_results"]["beam"]["forces"][elem_tag] = beam_res['forces']
+#                 results["element_results"]["beam"]["stresses"][elem_tag] = beam_res['stresses']
+#                 results["element_results"]["beam"]["strains"][elem_tag] = beam_res['strains']
+
+#                 # Store new deflection and slope results
+#                 results["element_results"]["beam"]["deflections"][elem_tag] = beam_res['deflections']
+#                 results["element_results"]["beam"]["relative_deflections"][elem_tag] = beam_res['relative_deflections']
+#                 results["element_results"]["beam"]["slopes"][elem_tag] = beam_res['slopes']
+
+#                 # Store maximum and minimum values for easy access
+#                 results["element_results"]["beam"]["max_min_deflections"][elem_tag] = beam_res['max_min_deflections']
+#                 results["element_results"]["beam"]["max_min_slopes"][elem_tag] = beam_res['max_min_slopes']
+
+#                 # Store comprehensive beam properties
+#                 results["element_results"]["beam"]["beam_properties"][elem_tag] = beam_res['beam_properties']
+                
+#             elif 'shell' in ele_type.lower() or 'Shell' in ele_type:
+#                 shell_res = extract_shell_results(elem_tag)
+                
+#                 results["element_results"]["shell"]["forces"][elem_tag] = shell_res['forces']
+#                 results["element_results"]["shell"]["stresses"][elem_tag] = shell_res['stresses']
+#                 results["element_results"]["shell"]["strains"][elem_tag] = shell_res['strains']
+                
+#             else:
+#                 print(f"Unsupported element type {ele_type} for element {elem_tag}")
+#                 continue
+                
+#         except Exception as e:
+#             print(f"Error processing element {elem_tag} ({ele_type}): {str(e)}")
+#             continue
+
+#     # Save results
+#     json_filename = 'analysis_results.json'
+#     json_path = save_opensees_script(json_filename, results, output_folder)
+    
+#     return results, json_path
+
+def extract_all_results(section_props, num_points=5, output_folder="post_processing"):
     """
     Extract complete analysis results including nodal reactions/displacements and element forces/stresses/strains
     
@@ -1020,11 +1534,6 @@ def extract_all_results(section_props, output_folder, num_points=5):
         ValueError: If model contains no nodes or elements
         OSError: If output folder cannot be created
     """
-    # Validate and create output folder
-    try:
-        os.makedirs(output_folder, exist_ok=True)
-    except Exception as e:
-        raise OSError(f"Cannot create output folder {output_folder}: {str(e)}")
 
     # Get all nodes and elements
     all_node_tags = ops.getNodeTags()
@@ -1094,17 +1603,39 @@ def extract_all_results(section_props, output_folder, num_points=5):
         ele_type = ops.eleType(elem_tag)
         
         try:
+            # Method 2: Or use setdefault (more concise)
+            results["element_results"]["beam"].setdefault("deflections", {})
+            results["element_results"]["beam"].setdefault("relative_deflections", {})
+            results["element_results"]["beam"].setdefault("slopes", {})
+            results["element_results"]["beam"].setdefault("max_min_deflections", {})
+            results["element_results"]["beam"].setdefault("max_min_slopes", {})
+            results["element_results"]["beam"].setdefault("beam_properties", {})
+            results["element_results"]["beam"].setdefault("element_info", {})
+
             # Process based on element type
             if 'beam' in ele_type.lower() or 'ForceBeamColumn' in ele_type:
                 beam_res = extract_beam_results(
                     ele_tag=elem_tag,
                     nep=num_points,
-                    section_properties=section_props
+                    section_properties=section_props  # Fixed: using section_props parameter
                 )
                 
+                # Store all beam analysis results
                 results["element_results"]["beam"]["forces"][elem_tag] = beam_res['forces']
                 results["element_results"]["beam"]["stresses"][elem_tag] = beam_res['stresses']
                 results["element_results"]["beam"]["strains"][elem_tag] = beam_res['strains']
+
+                # Store new deflection and slope results
+                results["element_results"]["beam"]["deflections"][elem_tag] = beam_res['deflections']
+                results["element_results"]["beam"]["relative_deflections"][elem_tag] = beam_res['relative_deflections']
+                results["element_results"]["beam"]["slopes"][elem_tag] = beam_res['slopes']
+
+                # Store maximum and minimum values for easy access
+                results["element_results"]["beam"]["max_min_deflections"][elem_tag] = beam_res['max_min_deflections']
+                results["element_results"]["beam"]["max_min_slopes"][elem_tag] = beam_res['max_min_slopes']
+
+                # Store comprehensive beam properties
+                results["element_results"]["beam"]["beam_properties"][elem_tag] = beam_res['beam_properties']
                 
             elif 'shell' in ele_type.lower() or 'Shell' in ele_type:
                 shell_res = extract_shell_results(elem_tag)
@@ -1121,32 +1652,19 @@ def extract_all_results(section_props, output_folder, num_points=5):
             print(f"Error processing element {elem_tag} ({ele_type}): {str(e)}")
             continue
 
-    # Save results to JSON file
-    output_path = os.path.join(output_folder, "analysis_results.json")
-    try:
-        with open(output_path, 'w') as f:
-            json.dump(results, f, indent=2)
-        print(f"Results successfully saved to {output_path}")
-    except Exception as e:
-        print(f"Error saving results to {output_path}: {str(e)}")
-        raise
+    # Save results
+    json_filename = 'analysis_results.json'
+    json_path = save_opensees_script(json_filename, results, output_folder)
+    
+    return results, json_path
 
-    return results
 
-def calculate_slab_reinforcement_from_shell_forces(
-    results,
-    section_properties, 
-    output_folder="postprocessing_folder", 
-    num_points=5, 
-    load_combination="combo2"
-):
+
+def calculate_slab_reinforcement_from_shell_forces(results, section_properties, num_points=5, output_folder="post_processing"):
     """
     Calculate slab reinforcement from shell forces according to ACI 318 (FPS units).
     Uses results from extract_all_results() function.
     """
-    # Create output directories
-    json_folder = os.path.join(output_folder, "json_files", load_combination, "slab_reinforcement")
-    os.makedirs(json_folder, exist_ok=True)
 
     # Extract shell forces from the results
     shell_forces = {}
@@ -1199,610 +1717,396 @@ def calculate_slab_reinforcement_from_shell_forces(
             continue
 
     # Save results
-    output_path = os.path.join(json_folder, "slab_reinforcement.json")
-    with open(output_path, 'w') as f:
-        json.dump(reinforcement_results, f, indent=2)
+    json_filename = 'slab_reinforcement.json'
+    json_path = save_opensees_script(json_filename, reinforcement_results, output_folder)
+    
+    return reinforcement_results, json_path
 
-    print(f"Slab reinforcement results saved to {output_path}")
-    return reinforcement_results
 
-# def response_spectrum_analysis(section_properties, Tn, Sa, direction=1, num_modes=7, output_dir="RSA_Results", JSON_FOLDER=None):
-#     """
-#     Complete Response Spectrum Analysis implementation with CQC combination, member forces, drifts, and plots
+def response_spectrum_analysis(model_data, Tn, Sa, direction=1, num_modes=7, output_folder="post_processing"):
+    """
+    Complete Response Spectrum Analysis using the modified model_data structure
     
-#     Args:
-#         Tn (list): List of periods for response spectrum
-#         Sa (list): List of spectral accelerations
-#         num_modes (int): Number of modes to consider
-#         output_dir (str): Directory to save output files
-#         JSON_FOLDER (str): Path to folder containing element data (for member forces)
-    
-#     Returns:
-#         dict: Dictionary containing all analysis results
-#     """
-#     # Create output directory if it doesn't exist
-#     if not os.path.exists(output_dir):
-#         os.makedirs(output_dir)
-    
-#     # =============================================
-#     # STEP 1: SETUP AND MODAL ANALYSIS
-#     # =============================================
-    
-#     # Analysis settings for modal analysis
-#     ops.constraints("Transformation")
-#     ops.numberer("RCM")
-#     ops.system("UmfPack")
-#     ops.test("NormUnbalance", 0.0001, 10)
-#     ops.algorithm("Linear")
-#     ops.integrator("LoadControl", 0.0)
-#     ops.analysis("Static")
-    
-#     # Run eigenvalue analysis
-#     eigs = ops.eigen("-genBandArpack", num_modes)
-    
-#     # Get modal properties
-#     modal_props = ops.modalProperties("-return")
-    
-#     # Calculate natural periods
-#     periods = []
-#     for eig in eigs:
-#         if eig > 0:
-#             omega = math.sqrt(eig)
-#             period = 2 * math.pi / omega
-#         else:
-#             period = 0.0
-#         periods.append(period)
-    
-#     print("\nModal Properties:")
-#     for i in range(num_modes):
-#         print(f"Mode {i+1}: T = {periods[i]:.4f} s, ω = {math.sqrt(eigs[i]):.4f} rad/s")
-    
-#     # =============================================
-#     # STEP 2: RESPONSE SPECTRUM ANALYSIS SETUP
-#     # =============================================
-    
-#     # Define story heights (this should be customized for your structure)
-#     story_heights = {
-#         1: 0.0,      # Ground level
-#         2: 4.0,      # First floor at 4m
-#         3: 8.0,      # Second floor at 8m
-#         4: 12.0      # Third floor at 12m
-#     }
-    
-#     # Damping settings for CQC
-#     dmp = [0.05] * num_modes  # 5% damping for all modes
-#     scalf = [1.0] * num_modes  # Scaling factors
-    
-#     # Create response spectrum time series
-#     ops.timeSeries("Path", 100, "-time", *Tn, "-values", *Sa)
-    
-#     # =============================================
-#     # STEP 3: EXTRACT NODE AND ELEMENT DATA
-#     # =============================================
-    
-#     # Get all node coordinates
-#     node_coords = {}
-#     node_tags = ops.getNodeTags()
-#     for node in node_tags:
-#         node_coords[node] = ops.nodeCoord(node)
-    
-#     # Calculate floor masses and stiffness properties
-#     floor_masses = calculate_floor_masses(node_coords)
-#     floor_stiffness, floor_stiffness_values = calculate_floor_stiffness(
-#         node_coords, modal_props, eigs, floor_masses)
-    
-#     # =============================================
-#     # STEP 4: PERFORM RESPONSE SPECTRUM ANALYSIS
-#     # =============================================
-    
-#     # Initialize dictionaries to store results
-#     modal_displacements = {}
-#     modal_reactions = {}
-    
-#     # Run RSA for each mode
-#     for mode in range(1, num_modes + 1):
-#         ops.responseSpectrumAnalysis(1, '-Tn', *Tn, '-Sa', *Sa, '-mode', mode)
-#         ops.reactions()
+    Args:
+        model_data (dict): Model data from create_structural_model()
+        Tn (list): List of periods for response spectrum
+        Sa (list): List of spectral accelerations
+        direction (int): Excitation direction (1=X, 2=Y, 3=Z)
+        num_modes (int): Number of modes to consider
+        output_folder (str): Output folder path
         
-#         # Store modal displacements
-#         modal_displacements[mode] = {}
-#         for node in node_tags:
-#             modal_displacements[mode][node] = ops.nodeDisp(node)
+    Returns:
+        dict: Dictionary containing all analysis results and saved file paths
+    """
+    
+    # Extract needed components from model_data
+    section_properties = model_data['section_properties']
+    nodes = model_data['nodes']
+    frame_elements = model_data['frame_elements']
+    shell_elements = model_data['shell_elements']
+    
+    try:
+        # Create output folder for RSA
+        rsa_output_folder = os.path.join(output_folder, "response_spectrum_analysis")
+        os.makedirs(rsa_output_folder, exist_ok=True)
         
-#         # Store modal reactions
-#         modal_reactions[mode] = {}
-#         for node in node_tags:
-#             modal_reactions[mode][node] = ops.nodeReaction(node)
-    
-#     # =============================================
-#     # STEP 5: CQC COMBINATION OF RESULTS
-#     # =============================================
-    
-#     # Combine displacements using CQC
-#     cqc_displacements = {}
-#     for node in node_tags:
-#         cqc_displacements[node] = {
-#             'Ux': CQC([modal_displacements[m][node][0] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-#             'Uy': CQC([modal_displacements[m][node][1] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-#             'Uz': CQC([modal_displacements[m][node][2] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 2 else 0.0,
-#             'Rx': CQC([modal_displacements[m][node][3] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 3 else 0.0,
-#             'Ry': CQC([modal_displacements[m][node][4] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 4 else 0.0,
-#             'Rz': CQC([modal_displacements[m][node][5] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 5 else 0.0
-#         }
-    
-#     # Combine reactions using CQC
-#     cqc_reactions = {}
-#     for node in node_tags:
-#         cqc_reactions[node] = {
-#             'Fx': CQC([modal_reactions[m][node][0] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-#             'Fy': CQC([modal_reactions[m][node][1] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-#             'Fz': CQC([modal_reactions[m][node][2] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 2 else 0.0,
-#             'Mx': CQC([modal_reactions[m][node][3] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 3 else 0.0,
-#             'My': CQC([modal_reactions[m][node][4] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 4 else 0.0,
-#             'Mz': CQC([modal_reactions[m][node][5] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 5 else 0.0
-#         }
-    
-#     # =============================================
-#     # STEP 6: EXTRACT MEMBER FORCES AND DRIFTS
-#     # =============================================
-    
-#     # Extract and combine member forces (if element data is available)
-#     if JSON_FOLDER is not None:
-#         modal_forces, cqc_forces, critical_forces = extract_and_combine_forces_multiple_sections(output_dir, JSON_FOLDER, section_properties, Tn, Sa, direction, eigs, dmp, scalf, 
-#                                                num_sections=10, json_filepath='RSA_Forces_MultiSection.json')
-#     else:
-#         print("Warning: No element data provided - skipping member force extraction")
-    
-#     # Calculate story drifts
-#     story_drifts = extract_story_drifts(cqc_displacements, node_tags, story_heights)
-    
-#     # Calculate base and story shears
-#     shear_results = calculate_base_and_story_shears(
-#         output_dir, modal_reactions, cqc_reactions, story_heights, eigs)
-    
-#     # =============================================
-#     # STEP 7: GENERATE PLOTS AND VISUALIZATIONS
-#     # =============================================
-    
-#     # Plot model and mode shapes
-#     opsv.plot_model()
-#     plt.savefig(os.path.join(output_dir, "model_plot.png"))
-#     plt.close()
-    
-#     for mode in range(1, num_modes + 1):
-#         opsv.plot_mode_shape(mode, endDispFlag=0, fig_wi_he=(18, 18))
-#         plt.title(f"Mode Shape {mode}", fontsize=16)
-#         plt.savefig(os.path.join(output_dir, f"mode{mode}.png"), dpi=300)
-#         plt.close()
-    
-#     # Plot response spectrum
-#     plt.figure(figsize=(10, 6))
-#     plt.plot(Tn, Sa, 'b-', linewidth=2, label='Design Spectrum')
-#     plt.xlabel('Period (s)')
-#     plt.ylabel('Spectral Acceleration (g)')
-#     plt.title('Response Spectrum')
-#     plt.legend()
-#     plt.grid(True, alpha=0.3)
-#     plt.savefig(os.path.join(output_dir, 'response_spectrum.png'))
-#     plt.close()
-    
-#     # =============================================
-#     # STEP 8: SAVE RESULTS
-#     # =============================================
-#     print(f'---------+++++++++++-------')
-#     # print(modal_props)
-#     print(f'---------+++++++++++-------')
-
-#     # Save modal properties
-#     with open(os.path.join(output_dir, "modal_properties.json"), "w") as f:
-#         json.dump({
-#             "periods": periods,
-#             "eigenvalues": eigs,
-#             "modal_participation_factors": {
-#                 "MX": modal_props["partiFactorMX"],
-#                 "MY": modal_props["partiFactorMY"],
-#                 "RMZ": modal_props["partiFactorRMZ"]
-#             },
-#             "effective_masses": {
-#                 "MX": modal_props["partiMassMX"],  # Changed from effMassaX to partiMassMX
-#                 "MY": modal_props["partiMassMY"],  # Changed from effMassaY to partiMassMY
-#                 "RMZ": modal_props["partiMassRMZ"]  # Changed from effMassaRotZ to partiMassRMZ
-#             },
-#             "mass_ratios": {
-#                 "MX": modal_props["partiMassRatiosMX"],
-#                 "MY": modal_props["partiMassRatiosMY"],
-#                 "RMZ": modal_props["partiMassRatiosRMZ"]
-#             },
-#             "cumulative_mass_ratios": {
-#                 "MX": modal_props["partiMassRatiosCumuMX"],
-#                 "MY": modal_props["partiMassRatiosCumuMY"],
-#                 "RMZ": modal_props["partiMassRatiosCumuRMZ"]
-#             }
-#         }, f, indent=4)
-    
-#     # Save nodal responses
-#     with open(os.path.join(output_dir, "nodal_responses.json"), "w") as f:
-#         json.dump({
-#             "modal_displacements": modal_displacements,
-#             "modal_reactions": modal_reactions,
-#             "cqc_displacements": cqc_displacements,
-#             "cqc_reactions": cqc_reactions,
-#             "story_drifts": story_drifts,
-#             "shear_results": shear_results
-#         }, f, indent=4)
-    
-#     # Save floor properties
-#     floor_data = []
-#     for z in sorted(floor_masses.keys()):
-#         com_x, com_y, _, mass = floor_masses[z]
-#         if z in floor_stiffness:
-#             cos_x, cos_y, _ = floor_stiffness[z]
-#             Kx, Ky, Kr = floor_stiffness_values[z]
-#         else:
-#             cos_x, cos_y = com_x, com_y
-#             Kx, Ky, Kr = 0, 0, 0
-
-#         floor_data.append({
-#             "Floor_Z": round(z, 2),
-#             "COM_X": round(com_x, 3),
-#             "COM_Y": round(com_y, 3),
-#             "Mass": round(mass, 3),
-#             "COS_X": round(cos_x, 3),
-#             "COS_Y": round(cos_y, 3),
-#             "Kx": round(Kx, 3),
-#             "Ky": round(Ky, 3),
-#             "Kr": round(Kr, 3)
-#         })
-    
-#     with open(os.path.join(output_dir, "floor_properties.json"), "w") as f:
-#         json.dump(floor_data, f, indent=4)
-    
-
-    
-#     return {
-#         "modal_properties": modal_props,
-#         "periods": periods,
-#         "eigenvalues": eigs,
-#         "modal_displacements": modal_displacements,
-#         "modal_reactions": modal_reactions,
-#         "cqc_displacements": cqc_displacements,
-#         "cqc_reactions": cqc_reactions,
-#         "story_drifts": story_drifts,
-#         "shear_results": shear_results,
-#         "floor_properties": floor_data
-#     }
-
-
-
-# def gravity_analysis(
-#     node_loads,
-#     element_uniform_loads,
-#     shell_pressure_loads,
-#     section_properties,
-#     elastic_section,
-#     aggregator_section,
-#     beam_integrations,
-#     frame_elements,
-#     num_points=5,
-#     OUTPUT_FOLDER="postprocessing_folder",
-#     load_combination="gravity"
-# ):
-    
-#     # Apply loads and run analysis
-#     ops.timeSeries("Linear", 1)
-#     ops.pattern("Plain", 1, 1)
-    
-#     for load in node_loads:
-#         ops.load(*load[1:])
-    
-#     for load in element_uniform_loads:
-#         ops.eleLoad("-ele", load[1], "-type", "-beamUniform", *load[2:])
-    
-#     for load in shell_pressure_loads:
-#         ops.eleLoad("-ele", load[1], "-type", "-surfaceLoad", *load[2:])
-
-#     # Analysis settings
-#     ops.constraints("Transformation")
-#     ops.numberer("RCM")
-#     ops.system("UmfPack")
-#     ops.test("NormUnbalance", 0.0001, 10)
-#     ops.algorithm("Linear")
-#     ops.integrator("LoadControl", 1.0)
-#     ops.analysis("Static")
-#     ops.analyze(1)
-#     ops.reactions()
-
-#     output_dir = OUTPUT_FOLDER
-
-#     try:
-#         results = extract_all_results(
-#             section_props=section_properties,
-#             output_folder=output_dir,
-#             num_points=7
-#         )
-#         print("Analysis completed successfully!")
-#     except Exception as e:
-#         print(f"Analysis failed: {str(e)}")
-
-#     calculate_slab_reinforcement_from_shell_forces(
-#         results,
-#         section_properties, 
-#         output_folder="postprocessing_folder", 
-#         num_points=5, 
-#         load_combination="combo2"
-#     )
-#     print(f"Results saved to 'analysis_results.json' with {num_points} points per element")
-    
-#     generate_structural_plots(OUTPUT_FOLDER,
-#     load_combination,
-#     section_properties,
-#     elastic_section,
-#     aggregator_section,
-#     beam_integrations,
-#     frame_elements)
-
-         
-#     return results
-
-
-
-# def create_structural_model():
-#     """Create complete structural model with nodes, elements, loads, and shell elements"""
-    
-#     # =============================================
-#     # 1. MATERIAL PROPERTIES
-#     # ["Elastic", material tag, E - Young's modulus in Pa]
-#     # ["ENT", material tag, stiffness value in N/m]
-#     # =============================================
-#     materials = [
-#         ["Elastic", 2, 938000000.0],  # Shear material
-#         ["ENT", 101, 1.0e6],          # Spring in X direction (1MN/m)
-#         ["ENT", 102, 1.0e6],          # Spring in Y direction
-#         ["ENT", 103, 1.0e6]           # Spring in Z direction
-#     ]
-
-#     # nD Materials (for shells)
-#     # ["ElasticIsotropic", material tag, E - Young's modulus in Pa, v - Poisson's ratio]
-#     nd_materials = [
-#         ["ElasticIsotropic", 10, 30000000000.0, 0.2]  # E=30GPa, v=0.2
-#     ]
-    
-#     # =============================================
-#     # 2. SECTION PROPERTIES
-#     # Store section properties as lists with the format:
-#     # [section_tag, type, A, Iy, Iz, J, B, H, t]
-#     # =============================================
-#     section_properties = [
-#         # tag, type,       A,    Iy,       Iz,       J,        B,    H,    t
-#         [1,    'rectangular', 0.09, 0.000675, 0.000675, 0.00114075, 0.3, 0.3, None],
-#         [3,    'rectangular', 0.09, 0.000675, 0.000675, 0.00114075, 0.3, 0.3, None]  # Aggregator uses same properties
-#     ]
-    
-#     # Elastic section definition using the properties from the list
-#     elastic_section = ["Elastic", 1, 30000000000.0, 
-#                       section_properties[0][2],  # A
-#                       section_properties[0][4],  # Iz
-#                       section_properties[0][3],  # Iy
-#                       12500000000.0,            # G
-#                       section_properties[0][5]] # J
-    
-#     # Aggregator section
-#     aggregator_section = [
-#         "Aggregator", 3, 
-#         2, "Vy", 2, "Vz", "-section", 1
-#     ]
-    
-#     # Shell section
-#     shell_section = [
-#         "PlateFiber", 20, 10, 0.15  # 15cm thick shell
-#     ]
-    
-#     # =============================================
-#     # 3. NODE DEFINITIONS
-#     # [nodeTag, x-coord in m, y-coord in m, z-coord in m, mass [mx, my, mz, mr1, mr2, mr3]]
-#     # =============================================
-#     nodes = [
-#         [1, 0, 0, 0, None],                    # Base nodes
-#         [2, 0, 0, 3, [200, 200, 200, 0, 0, 0]],
-#         [3, 4, 0, 3, [200, 200, 200, 0, 0, 0]],
-#         [4, 4, 0, 0, None],
-#         [5, 0, 0, 6, [200, 200, 200, 0, 0, 0]],
-#         [6, 4, 0, 6, [200, 200, 200, 0, 0, 0]],
-#         [7, 4, 3, 6, [200, 200, 200, 0, 0, 0]],
-#         [8, 0, 3, 6, [200, 200, 200, 0, 0, 0]],
-#         [9, 0, 3, 3, [200, 200, 200, 0, 0, 0]],
-#         [10, 0, 3, 0, None],
-#         [11, 4, 3, 3, [200, 200, 200, 0, 0, 0]],
-#         [12, 4, 3, 0, None],
-#         [13, 2, 1.5, 6, None],  # Diaphragm masters
-#         [14, 2, 1.5, 3, None],
-#     ]
-    
-#     # =============================================
-#     # 4. GEOMETRIC TRANSFORMATIONS
-#     # ["Linear", transformation tag, vecxzX, vecxzY, vecxzZ]
-#     # =============================================
-#     transformations = [
-#         ["Linear", 1, 1.0, 0.0, -0.0],
-#         ["Linear", 2, 0.0, 0.0, 1.0],
-#         ["Linear", 3, 1.0, 0.0, -0.0],
-#         ["Linear", 4, 1.0, 0.0, -0.0],
-#         ["Linear", 5, 0.0, 0.0, 1.0],
-#         ["Linear", 6, 0.0, 0.0, 1.0],
-#         ["Linear", 7, 0.0, 0.0, 1.0],
-#         ["Linear", 8, 0.0, 0.0, 1.0],
-#         ["Linear", 9, 0.0, 0.0, 1.0],
-#         ["Linear", 10, 1.0, 0.0, -0.0],
-#         ["Linear", 11, 1.0, 0.0, -0.0],
-#         ["Linear", 12, 1.0, 0.0, -0.0],
-#         ["Linear", 13, 0.0, 0.0, 1.0],
-#         ["Linear", 14, 0.0, 0.0, 1.0],
-#         ["Linear", 15, 1.0, 0.0, -0.0],
-#         ["Linear", 16, 1.0, 0.0, -0.0],
-#         ["Linear", 20, 0.0, 0.0, 1.0]  # For shell elements
-#     ]
-    
-#     # =============================================
-#     # 5. BEAM INTEGRATION
-#     # ["Lobatto", integration tag, section tag, Np - number of integration points]
-#     # =============================================
-#     beam_integrations = [
-#         ["Lobatto", 1, 3, 5]
-#     ]
-    
-#     # =============================================
-#     # 6. ELEMENT CONNECTIONS
-#     # ["forceBeamColumn", element tag, iNode, jNode, transformation tag, integration tag]
-#     # =============================================
-#     frame_elements = [
-#         ["forceBeamColumn", 1, 1, 2, 1, 1],
-#         ["forceBeamColumn", 2, 2, 3, 2, 1],
-#         ["forceBeamColumn", 3, 4, 3, 3, 1],
-#         ["forceBeamColumn", 4, 2, 5, 4, 1],
-#         ["forceBeamColumn", 5, 5, 6, 5, 1],
-#         ["forceBeamColumn", 6, 7, 6, 6, 1],
-#         ["forceBeamColumn", 7, 8, 7, 7, 1],
-#         ["forceBeamColumn", 8, 9, 2, 8, 1],
-#         ["forceBeamColumn", 9, 8, 5, 9, 1],
-#         ["forceBeamColumn", 10, 10, 9, 10, 1],
-#         ["forceBeamColumn", 11, 3, 6, 11, 1],
-#         ["forceBeamColumn", 12, 11, 7, 12, 1],
-#         ["forceBeamColumn", 13, 11, 3, 13, 1],
-#         ["forceBeamColumn", 14, 9, 11, 14, 1],
-#         ["forceBeamColumn", 15, 12, 11, 15, 1],
-#         ["forceBeamColumn", 16, 9, 8, 16, 1]
-#     ]
-    
-#     # Shell elements format: [type, tag, node1, node2, node3, node4, secTag]
-#     shell_elements = [
-#         ["ShellMITC4", 101, 2, 3, 11, 9, 20],
-#         # ["ShellMITC4", 102, 15, 4, 3, 17, 20],
-#         # ["ShellMITC4", 103, 17, 3, 11, 9, 20],
-#         # ["ShellMITC4", 104, 2, 17, 9, 10, 20]
-#     ]
-    
-
-#     # =============================================
-#     # 7. BOUNDARY CONDITIONS
-#     # [nodeTag, fixX, fixY, fixZ, fixRX, fixRY, fixRZ] (1=fixed, 0=free)
-#     # =============================================
-#     fixities = [
-#         [1, 1, 1, 1, 1, 1, 1],
-#         [10, 1, 1, 1, 1, 1, 1],
-#         [4, 1, 1, 1, 1, 1, 1],
-#         [12, 1, 1, 1, 1, 1, 1],
-#         [13, 0, 0, 1, 1, 1, 0],
-#         [14, 0, 0, 1, 1, 1, 0]
-#     ]
-    
-#     # =============================================
-#     # 8. RIGID DIAPHRAGMS
-#     # Format: [perpDirn, masterNode, *slaveNodes]
-#     # =============================================
-#     diaphragms = [
-#         [3, 14, 2, 3, 9, 11],
-#         [3, 13, 5, 6, 7, 8]
-#     ]
-    
-#     # =============================================
-#     # 9. LOAD DEFINITIONS
-#     # [loadTag, nodeTag, Fx, Fy, Fz, Mx, My, Mz]
-#     # =============================================
-#     node_loads = [
-#         [1, 5, 0, 0, -10000, 0, 0, 0],  # 10kN vertical load at node 5
-#         [2, 6, 0, 0, -10000, 0, 0, 0]   # 10kN vertical load at node 6
-#     ]
-    
-#     element_uniform_loads = [
-#         [1, 1, 0, -5000, 0],  # 5kN/m vertical load on element 1
-#         [2, 2, 0, -5000, 0]   # 5kN/m vertical load on element 2
-#     ]
-    
-#     shell_pressure_loads = [
-#         # [101, 101, -2000],  # 2kPa pressure on shell 101
-#         # [102, 102, -2000]   # 2kPa pressure on shell 102
-#     ]
-
-#     # Zero length elements
-#     zero_length_elements = [
-#         # [2001, 1, 1001, 101, 102, 103],  # Base spring
-#         # [2002, 4, 1004, 101, 102, 103],
-#         # [2003, 10, 1010, 101, 102, 103],
-#         # [2004, 12, 1012, 101, 102, 103]
-#     ]
-    
-#     # =============================================
-#     # BUILD THE MODEL
-#     # =============================================
-#     ops.wipe()
-#     ops.model('basic', '-ndm', 3, '-ndf', 6)
-    
-#     # Create materials
-#     for mat in materials:
-#         ops.uniaxialMaterial(*mat)
-    
-#     for mat in nd_materials:
-#         ops.nDMaterial(*mat)
-
-#     # Create sections
-#     ops.section(*elastic_section)
-#     ops.section(*aggregator_section)
-#     ops.section(*shell_section)
-    
-#     # Create nodes
-#     for node in nodes:
-#         if node[4] is not None:
-#             ops.node(node[0], node[1], node[2], node[3], '-mass', *node[4])
-#         else:
-#             ops.node(node[0], node[1], node[2], node[3])
-    
-#     # Create transformations
-#     for transf in transformations:
-#         ops.geomTransf(*transf)
-    
-#     # Create beam integration
-#     for integ in beam_integrations:
-#         ops.beamIntegration(*integ)
-    
-#     # Create frame elements
-#     for elem in frame_elements:
-#         ops.element(*elem)
-    
-#     # Create shell elements
-#     for elem in shell_elements:
-#         ops.element(*elem)
-    
-#     # Apply boundary conditions
-#     for fix in fixities:
-#         ops.fix(*fix)
-    
-#     # Create rigid diaphragms
-#     for diaph in diaphragms:
-#         ops.rigidDiaphragm(*diaph)
-    
-#     # Create zeroLength elements
-#     for elem in zero_length_elements:
-#         spring_node_tag = elem[2]
-#         base_node_tag = elem[1]
-#         base_node_coords = ops.nodeCoord(base_node_tag)
-#         x, y, z = base_node_coords[0], base_node_coords[1], base_node_coords[2]
+        # =============================================
+        # STEP 1: SETUP AND MODAL ANALYSIS
+        # =============================================
+        ops.wipeAnalysis()
         
-#         ops.node(spring_node_tag, x, y, z)
-#         ops.fix(spring_node_tag, 1, 1, 1, 1, 1, 1)
+        # Analysis settings for modal analysis
+        ops.constraints("Transformation")
+        ops.numberer("RCM")
+        ops.system("UmfPack")
+        ops.test("NormUnbalance", 0.0001, 10)
+        ops.algorithm("Linear")
+        ops.integrator("LoadControl", 0.0)
+        ops.analysis("Static")
         
-#         ops.element("zeroLength", elem[0], elem[1], elem[2], 
-#                 "-mat", elem[3], elem[4], elem[5], 
-#                 "-dir", 1, 2, 3)
+        # Run eigenvalue analysis
+        print(f"[RSA] Running eigenvalue analysis for {num_modes} modes...")
+        eigs = ops.eigen("-genBandArpack", num_modes)
+        
+        # Get modal properties
+        modal_props = ops.modalProperties("-return")
+        
+        # Calculate natural periods
+        periods = [2 * math.pi / math.sqrt(eig) if eig > 0 else 0.0 for eig in eigs]
+        
+        print("\nModal Properties:")
+        for i in range(num_modes):
+            print(f"Mode {i+1}: T = {periods[i]:.4f} s, ω = {math.sqrt(eigs[i]):.4f} rad/s")
+        
+        # =============================================
+        # STEP 2: RESPONSE SPECTRUM ANALYSIS SETUP
+        # =============================================
+        
+        # Define story heights (extract from node Z coordinates)
+        z_coords = sorted(list(set(node[3] for node in nodes)))
+        story_heights = {i+1: z for i, z in enumerate(z_coords)}
+        
+        # Damping settings for CQC
+        dmp = [0.05] * num_modes  # 5% damping for all modes
+        scalf = [1.0] * num_modes  # Scaling factors
+        
+        # Create response spectrum time series
+        ops.timeSeries("Path", 100, "-time", *Tn, "-values", *Sa)
+        
+        # =============================================
+        # STEP 3: EXTRACT NODE AND ELEMENT DATA
+        # =============================================
+        node_tags = ops.getNodeTags()
+        node_coords = {node: ops.nodeCoord(node) for node in node_tags}
+        
+        # Calculate floor properties
+        floor_masses = calculate_floor_masses(node_coords)
+        floor_stiffness, floor_stiffness_values = calculate_floor_stiffness(
+            node_coords, modal_props, eigs, floor_masses)
+        
+        # =============================================
+        # STEP 4: PERFORM RESPONSE SPECTRUM ANALYSIS
+        # =============================================
+        print(f"[RSA] Performing response spectrum analysis...")
+        modal_displacements = {}
+        modal_reactions = {}
+        
+        for mode in range(1, num_modes + 1):
+            ops.responseSpectrumAnalysis(direction, '-Tn', *Tn, '-Sa', *Sa, '-mode', mode)
+            ops.reactions()
+            
+            modal_displacements[mode] = {node: ops.nodeDisp(node) for node in node_tags}
+            modal_reactions[mode] = {node: ops.nodeReaction(node) for node in node_tags}
+        
+        # =============================================
+        # STEP 5: CQC COMBINATION OF RESULTS
+        # =============================================
+        def get_cqc_values(modes_data, node, index, default=0.0):
+            """Helper function for CQC combination"""
+            modal_values = [modes_data[m][node][index] if node in modes_data[m] and len(modes_data[m][node]) > index 
+                           else default for m in range(1, num_modes + 1)]
+            return CQC(modal_values, eigs, dmp, scalf)
+        
+        print(f"[RSA] Combining modal results using CQC...")
+        
+        # Combine displacements
+        cqc_displacements = {}
+        for node in node_tags:
+            cqc_displacements[node] = {
+                'Ux': get_cqc_values(modal_displacements, node, 0),
+                'Uy': get_cqc_values(modal_displacements, node, 1),
+                'Uz': get_cqc_values(modal_displacements, node, 2),
+                'Rx': get_cqc_values(modal_displacements, node, 3),
+                'Ry': get_cqc_values(modal_displacements, node, 4),
+                'Rz': get_cqc_values(modal_displacements, node, 5)
+            }
+        
+        # Combine reactions
+        cqc_reactions = {}
+        for node in node_tags:
+            cqc_reactions[node] = {
+                'Fx': get_cqc_values(modal_reactions, node, 0),
+                'Fy': get_cqc_values(modal_reactions, node, 1),
+                'Fz': get_cqc_values(modal_reactions, node, 2),
+                'Mx': get_cqc_values(modal_reactions, node, 3),
+                'My': get_cqc_values(modal_reactions, node, 4),
+                'Mz': get_cqc_values(modal_reactions, node, 5)
+            }
+        
+        # =============================================
+        # STEP 6: EXTRACT MEMBER FORCES AND DRIFTS
+        # =============================================
+        print(f"[RSA] Extracting member forces and story drifts...")
+        
+        # Extract and combine member forces
+        modal_forces, cqc_forces, critical_forces, forces_path = extract_and_combine_forces_multiple_sections(
+            section_properties, Tn, Sa, direction, eigs, dmp, scalf, 
+            num_sections=10, output_folder=rsa_output_folder
+        )
+        
+        # Calculate story drifts and shears
+        story_drifts = extract_story_drifts(cqc_displacements, node_tags, story_heights)
+        shear_results, shears_path = calculate_base_and_story_shears(
+            modal_reactions, cqc_reactions, story_heights, eigs, output_folder=rsa_output_folder
+        )
+        
+        # =============================================
+        # STEP 7: GENERATE PLOTS AND VISUALIZATIONS
+        # =============================================
+        print(f"[RSA] Generating plots and visualizations...")
+        saved_plots = []
+        
+        # Model plot
+        fig_model = plt.figure(figsize=(10, 8))
+        opsv.plot_model()
+        plt.title("Structural Model")
+        model_plot_path = save_opensees_script("model_plot.png", fig_model, rsa_output_folder)
+        saved_plots.append(model_plot_path)
+        plt.close(fig_model)
+        
+        # Mode shapes
+        mode_plot_paths = []
+        for mode in range(1, num_modes + 1):
+            fig_mode = plt.figure(figsize=(10, 8))
+            opsv.plot_mode_shape(mode)
+            plt.title(f"Mode Shape {mode}")
+            mode_path = save_opensees_script(f"mode_shape_{mode}.png", fig_mode, rsa_output_folder)
+            mode_plot_paths.append(mode_path)
+            plt.close(fig_mode)
+        
+        # Response spectrum plot
+        fig_spectrum = plt.figure(figsize=(10, 6))
+        plt.plot(Tn, Sa, 'b-', linewidth=2, label='Design Spectrum')
+        plt.xlabel('Period (s)')
+        plt.ylabel('Spectral Acceleration (g)')
+        plt.title('Response Spectrum')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        spectrum_path = save_opensees_script("response_spectrum.png", fig_spectrum, rsa_output_folder)
+        saved_plots.extend(mode_plot_paths)
+        saved_plots.append(spectrum_path)
+        plt.close(fig_spectrum)
+        
+        # =============================================
+        # STEP 8: SAVE RESULTS TO JSON
+        # =============================================
+        print(f"[RSA] Saving results to files...")
+        
+        # Prepare results dictionary
+        results = {
+            "modal_properties": {
+                "periods": periods,
+                "eigenvalues": eigs,
+                "modal_participation_factors": {
+                    "MX": modal_props["partiFactorMX"],
+                    "MY": modal_props["partiFactorMY"],
+                    "RMZ": modal_props["partiFactorRMZ"]
+                },
+                "effective_masses": {
+                    "MX": modal_props["partiMassMX"],
+                    "MY": modal_props["partiMassMY"],
+                    "RMZ": modal_props["partiMassRMZ"]
+                }
+            },
+            "nodal_responses": {
+                "modal_displacements": modal_displacements,
+                "modal_reactions": modal_reactions,
+                "cqc_displacements": cqc_displacements,
+                "cqc_reactions": cqc_reactions
+            },
+            "story_drifts": story_drifts,
+            "shear_results": shear_results,
+            "member_forces": {
+                "modal_forces": modal_forces,
+                "cqc_forces": cqc_forces,
+                "critical_forces": critical_forces
+            },
+            "floor_properties": [{
+                "Floor_Z": round(z, 2),
+                "COM_X": round(floor_masses[z][0], 3),
+                "COM_Y": round(floor_masses[z][1], 3),
+                "Mass": round(floor_masses[z][3], 3),
+                "Kx": round(floor_stiffness_values.get(z, (0,0,0))[0], 3),
+                "Ky": round(floor_stiffness_values.get(z, (0,0,0))[1], 3),
+                "Kr": round(floor_stiffness_values.get(z, (0,0,0))[2], 3)
+            } for z in sorted(floor_masses.keys())]
+        }
+        
+        # Save main results to JSON file
+        results_path = os.path.join(rsa_output_folder, "rsa_results.json")
+        with open(results_path, 'w') as f:
+            json.dump(results, f, indent=2, default=str)
+        
+        results["saved_files"] = {
+            "analysis_results": results_path,
+            "member_forces": forces_path,
+            "shear_results": shears_path,
+            "plots": saved_plots
+        }
+        
+        print(f"[RSA] Completed successfully. Results saved to {rsa_output_folder}")
+        return results
 
-#     print("Structural model with loads created successfully")
-#     return node_loads, element_uniform_loads, shell_pressure_loads, section_properties, elastic_section,aggregator_section, beam_integrations, frame_elements
+    except Exception as e:
+        print(f"\n[ERROR] Response Spectrum Analysis failed: {str(e)}")
+        raise
 
-def create_structural_model(materials, nd_materials, section_properties, elastic_section, 
-                          aggregator_section, shell_section, nodes, transformations, 
-                          beam_integrations, frame_elements, shell_elements, fixities, 
-                          diaphragms, node_loads, element_uniform_loads, shell_pressure_loads, 
-                          zero_length_elements):
-    """Create complete structural model with nodes, elements, loads, and shell elements"""
+
+def gravity_analysis(model_data, load_cases, load_combinations, output_folder="post_processing"):
+    """
+    Perform static gravity analysis with load combinations using the new model data structure
+    
+    Args:
+        model_data (dict): Dictionary containing all model components from create_structural_model()
+        load_cases (list): List of load case definitions
+        load_combinations (list): List of load combination definitions
+        output_folder (str): Output directory path
+        
+    Returns:
+        dict: Dictionary containing analysis results and saved file paths
+    """
+    
+    # Extract needed components from model_data
+    section_properties = model_data['section_properties']
+    print(100 * "--")
+
+    print("section_properties:", section_properties)
+    elastic_sections = model_data['elastic_sections']
+    beam_integrations = model_data['beam_integrations']
+    frame_elements = model_data['frame_elements']
+    shell_elements = model_data['shell_elements']
+    node_loads = model_data['node_loads']
+    element_uniform_loads = model_data['element_uniform_loads']
+    shell_pressure_loads = model_data['shell_pressure_loads']
+    num_points = model_data['num_points']
+
+    try:
+        # Get unique combination names
+        combos_to_apply = list(set([combo[1] for combo in load_combinations if len(combo) >= 2]))
+        print(f"Found {len(combos_to_apply)} load combinations to apply: {combos_to_apply}")
+        
+        # Initialize results dictionary
+        all_results = {}
+        
+        # Apply each combination
+        for i, combo_name in enumerate(combos_to_apply, start=1):
+            print(f"\nApplying combination: {combo_name}")
+            
+            # Create output folder for this combination
+            combo_output_folder = os.path.join(output_folder, combo_name)
+            os.makedirs(combo_output_folder, exist_ok=True)
+            
+            # Reset the model to initial state
+            ops.reset()
+            
+            # Set analysis parameters
+            ops.constraints("Transformation")
+            ops.numberer("RCM")
+            ops.system("UmfPack")
+            ops.test("NormUnbalance", 0.0001, 10)
+            ops.algorithm("Linear")
+            ops.integrator("LoadControl", 1.0)
+            ops.analysis("Static")
+            
+            # Apply the load combination
+            print(f"Applying loads for {combo_name}")
+            applied_loads = apply_structural_loads(
+                load_cases=load_cases,
+                load_combinations=load_combinations,
+                combo_name=combo_name,
+                pattern_tag=i,
+                time_series_tag=i
+            )
+            
+            # Run analysis
+            print("Running analysis...")
+            ops.analyze(1)
+            ops.reactions()
+            
+            # Extract results
+            print("Extracting results...")
+            results, results_path = extract_all_results(
+                section_props=section_properties,  # Fixed: using correct parameter name
+                num_points=num_points,
+                output_folder=combo_output_folder
+            )
+            
+            # Calculate reinforcement
+            reinforcement, reinforcement_path = calculate_slab_reinforcement_from_shell_forces(
+                results=results,
+                section_properties=section_properties,
+                num_points=num_points,
+                output_folder=combo_output_folder
+            )
+            
+            # Generate plots
+            plot_paths = generate_structural_plots(
+                section_properties=section_properties,
+                elastic_section=elastic_sections,
+                aggregator_section=None,  # Not used in new structure
+                beam_integrations=beam_integrations,
+                frame_elements=frame_elements,
+                output_folder=combo_output_folder
+            )
+            
+            # Store results for this combination
+            all_results[combo_name] = {
+                'analysis_results': results,
+                'reinforcement_design': reinforcement,
+                'result_files': {
+                    'analysis_results': results_path,
+                    'reinforcement_design': reinforcement_path,
+                    'plots': plot_paths
+                }
+            }
+            
+            # Clear the pattern before next combination
+            ops.remove('loadPattern', i)
+            
+        print("\nGravity analysis completed successfully")
+        return all_results
+
+    except Exception as e:
+        print(f"\n[ERROR] Gravity analysis failed: {str(e)}")
+        raise
+
+
+def create_structural_model(
+    materials,          # List of material properties
+    section_properties, # List of section properties (now including E and G)
+    nodes,             # Node definitions
+    transformations,   # Geometric transformations
+    frame_elements,    # Frame element connections
+    shell_elements,    # Shell element connections
+    fixities,          # Boundary conditions
+    diaphragms,        # Rigid diaphragms
+    node_loads,        # Nodal loads
+    element_uniform_loads,  # Element uniform loads
+    shell_pressure_loads,   # Shell pressure loads
+    zero_length_elements,   # Zero length elements
+    num_points=5       # Number of integration points
+):
+    """Create complete structural model with all components"""
     
     # =============================================
     # BUILD THE MODEL
@@ -1812,16 +2116,46 @@ def create_structural_model(materials, nd_materials, section_properties, elastic
     
     # Create materials
     for mat in materials:
-        ops.uniaxialMaterial(*mat)
-    
-    for mat in nd_materials:
-        ops.nDMaterial(*mat)
+        if mat[0] == "ElasticIsotropic":
+            ops.nDMaterial(*mat)
+        else:
+            ops.uniaxialMaterial(*mat)
 
-    # Create sections
-    ops.section(*elastic_section)
-    ops.section(*aggregator_section)
-    ops.section(*shell_section)
+    # Create elastic sections dynamically from section_properties
+    elastic_sections = []
+    for prop in section_properties:
+        if prop[1] != "shell":  # Changed from ['rectangular', 'circular']
+            elastic_section = [
+                "Elastic", 
+                prop[0],   # tag
+                prop[2],   # E
+                prop[4],   # A
+                prop[6],   # Iz
+                prop[5],   # Iy
+                prop[3],   # G
+                prop[7]    # J
+            ]
+            elastic_sections.append(elastic_section)
+            ops.section(*elastic_section)
     
+    # Create aggregator sections dynamically for all "Elastic" materials
+    elastic_mat_tags = [mat[1] for mat in materials if mat[0] == "Elastic"]
+    for i, mat_tag in enumerate(elastic_mat_tags):
+        if i < len(elastic_sections):  # Match with available sections
+            agg_section = [
+                "Aggregator", 
+                1000 + mat_tag,  # Unique tag
+                mat_tag, "Vy", 
+                mat_tag, "Vz", 
+                "-section", elastic_sections[i][1]
+            ]
+            ops.section(*agg_section)
+
+    # Create shell sections
+    for prop in section_properties:
+        if prop[1] == 'shell':
+            ops.section("PlateFiber", prop[0], prop[11], prop[10])  # tag, matTag, h
+
     # Create nodes
     for node in nodes:
         if node[4] is not None:
@@ -1834,8 +2168,17 @@ def create_structural_model(materials, nd_materials, section_properties, elastic
         ops.geomTransf(*transf)
     
     # Create beam integration
-    for integ in beam_integrations:
-        ops.beamIntegration(*integ)
+    beam_integrations = []
+    for i, mat_tag in enumerate(elastic_mat_tags):
+        if i < len(elastic_sections):
+            beam_integration = [
+                "Lobatto", 
+                100 + i,                # integration tag
+                1000 + mat_tag,         # section tag from aggregator
+                num_points              # number of integration points
+            ]
+            beam_integrations.append(beam_integration)
+            ops.beamIntegration(*beam_integration)
     
     # Create frame elements
     for elem in frame_elements:
@@ -1858,420 +2201,36 @@ def create_structural_model(materials, nd_materials, section_properties, elastic
         spring_node_tag = elem[2]
         base_node_tag = elem[1]
         base_node_coords = ops.nodeCoord(base_node_tag)
+        if not base_node_coords or len(base_node_coords) < 3:
+            raise RuntimeError(f"Base node {base_node_tag} not found or incomplete: {base_node_coords}")
+
         x, y, z = base_node_coords[0], base_node_coords[1], base_node_coords[2]
-        
-        ops.node(spring_node_tag, x, y, z)
-        ops.fix(spring_node_tag, 1, 1, 1, 1, 1, 1)
+        if not ops.nodeCoord(spring_node_tag):
+            ops.node(spring_node_tag, x, y, z)
+            ops.fix(spring_node_tag, 1, 1, 1, 1, 1, 1)
         
         ops.element("zeroLength", elem[0], elem[1], elem[2], 
                 "-mat", elem[3], elem[4], elem[5], 
                 "-dir", 1, 2, 3)
 
-    print("Structural model with loads created successfully")
-    return node_loads, element_uniform_loads, shell_pressure_loads, section_properties, elastic_section, aggregator_section, beam_integrations, frame_elements
-
-def gravity_analysis(model_data, num_points=5, OUTPUT_FOLDER="postprocessing_folder", load_combination="gravity"):
-    """Run gravity analysis using model data"""
-    
-    # First create the structural model
-    (node_loads, element_uniform_loads, shell_pressure_loads, 
-     section_properties, elastic_section, aggregator_section, 
-     beam_integrations, frame_elements) = create_structural_model(
-        model_data['materials'],
-        model_data['nd_materials'],
-        model_data['section_properties'],
-        model_data['elastic_section'],
-        model_data['aggregator_section'],
-        model_data['shell_section'],
-        model_data['nodes'],
-        model_data['transformations'],
-        model_data['beam_integrations'],
-        model_data['frame_elements'],
-        model_data['shell_elements'],
-        model_data['fixities'],
-        model_data['diaphragms'],
-        model_data['node_loads'],
-        model_data['element_uniform_loads'],
-        model_data['shell_pressure_loads'],
-        model_data['zero_length_elements']
-    )
-    
-    # Apply loads and run analysis
-    ops.timeSeries("Linear", 1)
-    ops.pattern("Plain", 1, 1)
-    
-    for load in node_loads:
-        ops.load(*load[1:])
-    
-    for load in element_uniform_loads:
-        ops.eleLoad("-ele", load[1], "-type", "-beamUniform", *load[2:])
-    
-    for load in shell_pressure_loads:
-        ops.eleLoad("-ele", load[1], "-type", "-surfaceLoad", *load[2:])
-
-    # Analysis settings
-    ops.constraints("Transformation")
-    ops.numberer("RCM")
-    ops.system("UmfPack")
-    ops.test("NormUnbalance", 0.0001, 10)
-    ops.algorithm("Linear")
-    ops.integrator("LoadControl", 1.0)
-    ops.analysis("Static")
-    ops.analyze(1)
-    ops.reactions()
-
-    output_dir = OUTPUT_FOLDER
-
-    try:
-        results = extract_all_results(
-            section_props=section_properties,
-            output_folder=output_dir,
-            num_points=7
-        )
-        print("Analysis completed successfully!")
-    except Exception as e:
-        print(f"Analysis failed: {str(e)}")
-
-    calculate_slab_reinforcement_from_shell_forces(
-        results,
-        section_properties, 
-        output_folder="postprocessing_folder", 
-        num_points=5, 
-        load_combination="combo2"
-    )
-    print(f"Results saved to 'analysis_results.json' with {num_points} points per element")
-    
-    generate_structural_plots(OUTPUT_FOLDER,
-    load_combination,
-    section_properties,
-    elastic_section,
-    aggregator_section,
-    beam_integrations,
-    frame_elements)
-
-         
-    return results
-
-
-
-def response_spectrum_analysis(model_data, Tn, Sa, direction=1, num_modes=7, output_dir="RSA_Results", JSON_FOLDER=None):
-    """
-    Complete Response Spectrum Analysis implementation with CQC combination, member forces, drifts, and plots
-    
-    Args:
-        model_data (dict): Dictionary containing all model data
-        Tn (list): List of periods for response spectrum
-        Sa (list): List of spectral accelerations
-        num_modes (int): Number of modes to consider
-        output_dir (str): Directory to save output files
-        JSON_FOLDER (str): Path to folder containing element data (for member forces)
-    
-    Returns:
-        dict: Dictionary containing all analysis results
-    """
-    # First create the structural model
-    (node_loads, element_uniform_loads, shell_pressure_loads, 
-     section_properties, elastic_section, aggregator_section, 
-     beam_integrations, frame_elements) = create_structural_model(
-        model_data['materials'],
-        model_data['nd_materials'],
-        model_data['section_properties'],
-        model_data['elastic_section'],
-        model_data['aggregator_section'],
-        model_data['shell_section'],
-        model_data['nodes'],
-        model_data['transformations'],
-        model_data['beam_integrations'],
-        model_data['frame_elements'],
-        model_data['shell_elements'],
-        model_data['fixities'],
-        model_data['diaphragms'],
-        model_data['node_loads'],
-        model_data['element_uniform_loads'],
-        model_data['shell_pressure_loads'],
-        model_data['zero_length_elements']
-    )
-    # Create output directory if it doesn't exist
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-    
-    # =============================================
-    # STEP 1: SETUP AND MODAL ANALYSIS
-    # =============================================
-    
-    # Analysis settings for modal analysis
-    ops.constraints("Transformation")
-    ops.numberer("RCM")
-    ops.system("UmfPack")
-    ops.test("NormUnbalance", 0.0001, 10)
-    ops.algorithm("Linear")
-    ops.integrator("LoadControl", 0.0)
-    ops.analysis("Static")
-    
-    # Run eigenvalue analysis
-    eigs = ops.eigen("-genBandArpack", num_modes)
-    
-    # Get modal properties
-    modal_props = ops.modalProperties("-return")
-    
-    # Calculate natural periods
-    periods = []
-    for eig in eigs:
-        if eig > 0:
-            omega = math.sqrt(eig)
-            period = 2 * math.pi / omega
-        else:
-            period = 0.0
-        periods.append(period)
-    
-    print("\nModal Properties:")
-    for i in range(num_modes):
-        print(f"Mode {i+1}: T = {periods[i]:.4f} s, ω = {math.sqrt(eigs[i]):.4f} rad/s")
-    
-    # =============================================
-    # STEP 2: RESPONSE SPECTRUM ANALYSIS SETUP
-    # =============================================
-    
-    # Define story heights (this should be customized for your structure)
-    story_heights = {
-        1: 0.0,      # Ground level
-        2: 4.0,      # First floor at 4m
-        3: 8.0,      # Second floor at 8m
-        4: 12.0      # Third floor at 12m
-    }
-    
-    # Damping settings for CQC
-    dmp = [0.05] * num_modes  # 5% damping for all modes
-    scalf = [1.0] * num_modes  # Scaling factors
-    
-    # Create response spectrum time series
-    ops.timeSeries("Path", 100, "-time", *Tn, "-values", *Sa)
-    
-    # =============================================
-    # STEP 3: EXTRACT NODE AND ELEMENT DATA
-    # =============================================
-    
-    # Get all node coordinates
-    node_coords = {}
-    node_tags = ops.getNodeTags()
-    for node in node_tags:
-        node_coords[node] = ops.nodeCoord(node)
-    
-    # Calculate floor masses and stiffness properties
-    floor_masses = calculate_floor_masses(node_coords)
-    floor_stiffness, floor_stiffness_values = calculate_floor_stiffness(
-        node_coords, modal_props, eigs, floor_masses)
-    
-    # =============================================
-    # STEP 4: PERFORM RESPONSE SPECTRUM ANALYSIS
-    # =============================================
-    
-    # Initialize dictionaries to store results
-    modal_displacements = {}
-    modal_reactions = {}
-    
-    # Run RSA for each mode
-    for mode in range(1, num_modes + 1):
-        ops.responseSpectrumAnalysis(1, '-Tn', *Tn, '-Sa', *Sa, '-mode', mode)
-        ops.reactions()
-        
-        # Store modal displacements
-        modal_displacements[mode] = {}
-        for node in node_tags:
-            modal_displacements[mode][node] = ops.nodeDisp(node)
-        
-        # Store modal reactions
-        modal_reactions[mode] = {}
-        for node in node_tags:
-            modal_reactions[mode][node] = ops.nodeReaction(node)
-    
-    # =============================================
-    # STEP 5: CQC COMBINATION OF RESULTS
-    # =============================================
-    
-    # Combine displacements using CQC
-    cqc_displacements = {}
-    for node in node_tags:
-        cqc_displacements[node] = {
-            'Ux': CQC([modal_displacements[m][node][0] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-            'Uy': CQC([modal_displacements[m][node][1] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-            'Uz': CQC([modal_displacements[m][node][2] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 2 else 0.0,
-            'Rx': CQC([modal_displacements[m][node][3] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 3 else 0.0,
-            'Ry': CQC([modal_displacements[m][node][4] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 4 else 0.0,
-            'Rz': CQC([modal_displacements[m][node][5] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_displacements[1][node]) > 5 else 0.0
-        }
-    
-    # Combine reactions using CQC
-    cqc_reactions = {}
-    for node in node_tags:
-        cqc_reactions[node] = {
-            'Fx': CQC([modal_reactions[m][node][0] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-            'Fy': CQC([modal_reactions[m][node][1] for m in range(1, num_modes+1)], eigs, dmp, scalf),
-            'Fz': CQC([modal_reactions[m][node][2] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 2 else 0.0,
-            'Mx': CQC([modal_reactions[m][node][3] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 3 else 0.0,
-            'My': CQC([modal_reactions[m][node][4] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 4 else 0.0,
-            'Mz': CQC([modal_reactions[m][node][5] for m in range(1, num_modes+1)], eigs, dmp, scalf) if len(modal_reactions[1][node]) > 5 else 0.0
-        }
-    
-    # =============================================
-    # STEP 6: EXTRACT MEMBER FORCES AND DRIFTS
-    # =============================================
-    
-    # Extract and combine member forces (if element data is available)
-    if JSON_FOLDER is not None:
-        modal_forces, cqc_forces, critical_forces = extract_and_combine_forces_multiple_sections(output_dir, JSON_FOLDER, section_properties, Tn, Sa, direction, eigs, dmp, scalf, 
-                                               num_sections=10, json_filepath='RSA_Forces_MultiSection.json')
-    else:
-        print("Warning: No element data provided - skipping member force extraction")
-    
-    # Calculate story drifts
-    story_drifts = extract_story_drifts(cqc_displacements, node_tags, story_heights)
-    
-    # Calculate base and story shears
-    shear_results = calculate_base_and_story_shears(
-        output_dir, modal_reactions, cqc_reactions, story_heights, eigs)
-    
-    # =============================================
-    # STEP 7: GENERATE PLOTS AND VISUALIZATIONS
-    # =============================================
-    
-    # Plot model and mode shapes
-    opsv.plot_model()
-    plt.savefig(os.path.join(output_dir, "model_plot.png"))
-    plt.close()
-    
-    for mode in range(1, num_modes + 1):
-        opsv.plot_mode_shape(mode, endDispFlag=0, fig_wi_he=(18, 18))
-        plt.title(f"Mode Shape {mode}", fontsize=16)
-        plt.savefig(os.path.join(output_dir, f"mode{mode}.png"), dpi=300)
-        plt.close()
-    
-    # Plot response spectrum
-    plt.figure(figsize=(10, 6))
-    plt.plot(Tn, Sa, 'b-', linewidth=2, label='Design Spectrum')
-    plt.xlabel('Period (s)')
-    plt.ylabel('Spectral Acceleration (g)')
-    plt.title('Response Spectrum')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.savefig(os.path.join(output_dir, 'response_spectrum.png'))
-    plt.close()
-    
-    # =============================================
-    # STEP 8: SAVE RESULTS
-    # =============================================
-    print(f'---------+++++++++++-------')
-    # print(modal_props)
-    print(f'---------+++++++++++-------')
-
-    # Save modal properties
-    with open(os.path.join(output_dir, "modal_properties.json"), "w") as f:
-        json.dump({
-            "periods": periods,
-            "eigenvalues": eigs,
-            "modal_participation_factors": {
-                "MX": modal_props["partiFactorMX"],
-                "MY": modal_props["partiFactorMY"],
-                "RMZ": modal_props["partiFactorRMZ"]
-            },
-            "effective_masses": {
-                "MX": modal_props["partiMassMX"],  # Changed from effMassaX to partiMassMX
-                "MY": modal_props["partiMassMY"],  # Changed from effMassaY to partiMassMY
-                "RMZ": modal_props["partiMassRMZ"]  # Changed from effMassaRotZ to partiMassRMZ
-            },
-            "mass_ratios": {
-                "MX": modal_props["partiMassRatiosMX"],
-                "MY": modal_props["partiMassRatiosMY"],
-                "RMZ": modal_props["partiMassRatiosRMZ"]
-            },
-            "cumulative_mass_ratios": {
-                "MX": modal_props["partiMassRatiosCumuMX"],
-                "MY": modal_props["partiMassRatiosCumuMY"],
-                "RMZ": modal_props["partiMassRatiosCumuRMZ"]
-            }
-        }, f, indent=4)
-    
-    # Save nodal responses
-    with open(os.path.join(output_dir, "nodal_responses.json"), "w") as f:
-        json.dump({
-            "modal_displacements": modal_displacements,
-            "modal_reactions": modal_reactions,
-            "cqc_displacements": cqc_displacements,
-            "cqc_reactions": cqc_reactions,
-            "story_drifts": story_drifts,
-            "shear_results": shear_results
-        }, f, indent=4)
-    
-    # Save floor properties
-    floor_data = []
-    for z in sorted(floor_masses.keys()):
-        com_x, com_y, _, mass = floor_masses[z]
-        if z in floor_stiffness:
-            cos_x, cos_y, _ = floor_stiffness[z]
-            Kx, Ky, Kr = floor_stiffness_values[z]
-        else:
-            cos_x, cos_y = com_x, com_y
-            Kx, Ky, Kr = 0, 0, 0
-
-        floor_data.append({
-            "Floor_Z": round(z, 2),
-            "COM_X": round(com_x, 3),
-            "COM_Y": round(com_y, 3),
-            "Mass": round(mass, 3),
-            "COS_X": round(cos_x, 3),
-            "COS_Y": round(cos_y, 3),
-            "Kx": round(Kx, 3),
-            "Ky": round(Ky, 3),
-            "Kr": round(Kr, 3)
-        })
-    
-    with open(os.path.join(output_dir, "floor_properties.json"), "w") as f:
-        json.dump(floor_data, f, indent=4)
-    
-
-    
+    print("Structural model created successfully")
     return {
-        "modal_properties": modal_props,
-        "periods": periods,
-        "eigenvalues": eigs,
-        "modal_displacements": modal_displacements,
-        "modal_reactions": modal_reactions,
-        "cqc_displacements": cqc_displacements,
-        "cqc_reactions": cqc_reactions,
-        "story_drifts": story_drifts,
-        "shear_results": shear_results,
-        "floor_properties": floor_data
+        'materials': materials,
+        'section_properties': section_properties,
+        'nodes': nodes,
+        'transformations': transformations,
+        'frame_elements': frame_elements,
+        'shell_elements': shell_elements,
+        'fixities': fixities,
+        'diaphragms': diaphragms,
+        'node_loads': node_loads,
+        'element_uniform_loads': element_uniform_loads,
+        'shell_pressure_loads': shell_pressure_loads,
+        'zero_length_elements': zero_length_elements,
+        'num_points': num_points,
+        'elastic_sections': elastic_sections,
+        'beam_integrations': beam_integrations
     }
-
-
-
-
-# the response spectrum function
-Tn = [0.0, 0.06, 0.1, 0.12, 0.18, 0.24, 0.3, 0.36, 0.4, 0.42, 
-    0.48, 0.54, 0.6, 0.66, 0.72, 0.78, 0.84, 0.9, 0.96, 1.02, 
-    1.08, 1.14, 1.2, 1.26, 1.32, 1.38, 1.44, 1.5, 1.56, 1.62, 
-    1.68, 1.74, 1.8, 1.86, 1.92, 1.98, 2.04, 2.1, 2.16, 2.22, 
-    2.28, 2.34, 2.4, 2.46, 2.52, 2.58, 2.64, 2.7, 2.76, 2.82, 
-    2.88, 2.94, 3.0, 3.06, 3.12, 3.18, 3.24, 3.3, 3.36, 3.42, 
-    3.48, 3.54, 3.6, 3.66, 3.72, 3.78, 3.84, 3.9, 3.96, 4.02, 
-    4.08, 4.14, 4.2, 4.26, 4.32, 4.38, 4.44, 4.5, 4.56, 4.62, 
-    4.68, 4.74, 4.8, 4.86, 4.92, 4.98, 5.04, 5.1, 5.16, 5.22, 
-    5.28, 5.34, 5.4, 5.46, 5.52, 5.58, 5.64, 5.7, 5.76, 5.82, 
-    5.88, 5.94, 6.0]
-
-
-Sa = [1.9612, 3.72628, 4.903, 4.903, 4.903, 4.903, 4.903, 4.903, 4.903, 4.6696172, 
-    4.0861602, 3.6321424, 3.2683398, 2.971218, 2.7241068, 2.5142584, 2.3348086, 2.1788932, 2.0425898, 1.9229566, 
-    1.8160712, 1.7199724, 1.6346602, 1.5562122, 1.485609, 1.4208894, 1.3620534, 1.3071398, 1.2571292, 1.211041, 
-    1.166914, 1.1267094, 1.0894466, 1.054145, 1.0217852, 0.990406, 0.960988, 0.9335312, 0.9080356, 0.8835206, 
-    0.8599862, 0.838413, 0.8168398, 0.7972278, 0.7785964, 0.759965, 0.7432948, 0.7266246, 0.710935, 0.6952454, 
-    0.6805364, 0.666808, 0.6540602, 0.6285646, 0.6040496, 0.5814958, 0.5609032, 0.5403106, 0.5206986, 0.5030478, 
-    0.485397, 0.4697074, 0.4540178, 0.4393088, 0.4255804, 0.411852, 0.3991042, 0.3863564, 0.3755698, 0.3638026, 
-    0.353016, 0.34321, 0.333404, 0.3245786, 0.3157532, 0.3069278, 0.2981024, 0.2902576, 0.2833934, 0.2755486, 
-    0.2686844, 0.2618202, 0.254956, 0.2490724, 0.2431888, 0.2373052, 0.2314216, 0.2265186, 0.220635, 0.215732, 
-    0.210829, 0.205926, 0.2020036, 0.1971006, 0.1931782, 0.1892558, 0.1853334, 0.181411, 0.1774886, 0.1735662, 
-    0.1706244, 0.166702, 0.1637602]
-
 
 
 

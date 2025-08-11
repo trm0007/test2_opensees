@@ -1,0 +1,655 @@
+{% extends "opensees/base.html" %}
+
+{% block content %}
+
+<div class="container">
+    <h1 class="text-center mb-4">Punching Shear Analysis</h1>
+    
+    <!-- Navigation Buttons -->
+    {% include "opensees/calculator_nav.html" %}
+    
+    {% if error_message %}
+        <div class="alert alert-danger">{{ error_message }}</div>
+    {% endif %}
+    
+    {% if success_message %}
+        <div class="alert alert-success">{{ success_message }}</div>
+    {% endif %}
+    
+    <!-- Analysis Input Form -->
+    {% if not analysis_completed %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h4>Punching Shear Analysis Input</h4>
+        </div>
+        <div class="card-body">
+            <form method="post" id="punchingShearForm">
+                {% csrf_token %}
+                
+                <div class="mb-4">
+                    <label for="input_data" class="form-label">Analysis Parameters</label>
+                    <textarea class="form-control" id="input_data" name="input_data" rows="20" placeholder="Enter analysis parameters in JSON format or key:value pairs. Example:
+
+JSON Format:
+{
+  &quot;col_width&quot;: 20,
+  &quot;col_depth&quot;: 20,
+  &quot;slab_avg_depth&quot;: 8,
+  &quot;condition&quot;: &quot;I&quot;,
+  &quot;studrail_length&quot;: 12,
+  &quot;Vz&quot;: -200,
+  &quot;Mx&quot;: 500,
+  &quot;My&quot;: 300,
+  &quot;f_prime_c&quot;: 4000,
+  &quot;fy&quot;: 60000,
+  &quot;reinforcement_type&quot;: &quot;both&quot;,
+  &quot;consider_ecc&quot;: true,
+  &quot;gamma_vx&quot;: &quot;auto&quot;,
+  &quot;gamma_vy&quot;: &quot;auto&quot;,
+  &quot;openings&quot;: [
+    {&quot;xo&quot;: 10, &quot;yo&quot;: 10, &quot;width&quot;: 5, &quot;depth&quot;: 5}
+  ]
+}
+
+Or Key:Value Format:
+col_width: 20
+col_depth: 20
+slab_avg_depth: 8
+condition: I
+studrail_length: 12
+Vz: -200
+Mx: 500
+My: 300
+f_prime_c: 4000
+fy: 60000
+reinforcement_type: both
+consider_ecc: true
+gamma_vx: auto
+gamma_vy: auto
+openings: [{&quot;xo&quot;: 10, &quot;yo&quot;: 10, &quot;width&quot;: 5, &quot;depth&quot;: 5}]"></textarea>
+                    <small class="text-muted">
+                        <strong>Parameters:</strong><br>
+                        • Column dimensions: col_width, col_depth (in)<br>
+                        • Slab: slab_avg_depth (in)<br>
+                        • Condition: I (Interior), N/S/E/W (Edge), NE/NW/SE/SW (Corner)<br>
+                        • Forces: Vz (kips, negative for downward), Mx, My (kip-in)<br>
+                        • Material: f_prime_c (psi), fy (psi)<br>
+                        • Reinforcement type: both, conventional, stud<br>
+                        • Openings: Array of objects with xo, yo, width, depth (in)
+                    </small>
+                </div>
+                
+                <div class="text-center">
+                    <button type="submit" class="btn btn-primary btn-lg">Run Punching Shear Analysis</button>
+                </div>
+            </form>
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- Analysis Results -->
+    {% if analysis_completed %}
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h4>Analysis Results</h4>
+            <button type="button" class="btn btn-secondary" onclick="location.reload()">New Analysis</button>
+        </div>
+        <div class="card-body">
+            
+            <!-- Analysis Images -->
+            {% if image_files %}
+            <div class="mb-4">
+                <h5>Analysis Visualizations</h5>
+                <div class="row">
+                    {% if image_files.preview %}
+                    <div class="col-md-6 mb-3">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0">Perimeter Preview</h6>
+                            </div>
+                            <div class="card-body text-center">
+                                <img src="{{ image_files.preview }}" class="img-fluid" alt="Perimeter Preview" style="max-height: 400px;">
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                    
+                    {% if image_files.2d_plot %}
+                    <div class="col-md-6 mb-3">
+                        <div class="card">
+                            <div class="card-header">
+                                <h6 class="mb-0">2D Analysis Plot</h6>
+                            </div>
+                            <div class="card-body text-center">
+                                <img src="{{ image_files.2d_plot }}" class="img-fluid" alt="2D Plot" style="max-height: 400px;">
+                            </div>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                {% if image_files.3d_plot %}
+                <div class="card mb-3">
+                    <div class="card-header">
+                        <h6 class="mb-0">3D Interactive Plot</h6>
+                    </div>
+                    <div class="card-body">
+                        <div style="height: 500px; overflow: auto;">
+                            {{ image_files.3d_plot|safe }}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+            
+            <!-- File Downloads -->
+            {% if files_available %}
+            <div class="mb-4">
+                <h5>Download Files:</h5>
+                <div class="row">
+                    {% if files_available.2d_plot %}
+                    <div class="col-md-3 mb-2">
+                        <a href="{% url 'opensees:download_punching_shear_file' project.pk task.pk files_available.2d_plot %}" 
+                           class="btn btn-outline-primary btn-sm w-100" download>
+                            2D Plot (PNG)
+                        </a>
+                    </div>
+                    {% endif %}
+                    
+                    {% if files_available.3d_plot %}
+                    <div class="col-md-3 mb-2">
+                        <a href="{% url 'opensees:download_punching_shear_file' project.pk task.pk files_available.3d_plot %}" 
+                           class="btn btn-outline-primary btn-sm w-100" download>
+                            3D Plot (HTML)
+                        </a>
+                    </div>
+                    {% endif %}
+                    
+                    {% if files_available.preview %}
+                    <div class="col-md-3 mb-2">
+                        <a href="{% url 'opensees:download_punching_shear_file' project.pk task.pk files_available.preview %}" 
+                           class="btn btn-outline-primary btn-sm w-100" download>
+                            Preview (PNG)
+                        </a>
+                    </div>
+                    {% endif %}
+                    
+                    {% if files_available.results_csv %}
+                    <div class="col-md-3 mb-2">
+                        <a href="{% url 'opensees:download_punching_shear_file' project.pk task.pk files_available.results_csv %}" 
+                           class="btn btn-outline-success btn-sm w-100" download>
+                            Results (CSV)
+                        </a>
+                    </div>
+                    {% endif %}
+                    
+                    {% if files_available.results_json %}
+                    <div class="col-md-3 mb-2">
+                        <a href="{% url 'opensees:download_punching_shear_file' project.pk task.pk files_available.results_json %}" 
+                           class="btn btn-outline-success btn-sm w-100" download>
+                            Results (JSON)
+                        </a>
+                    </div>
+                    {% endif %}
+                    
+                    {% if files_available.evaluation %}
+                    <div class="col-md-3 mb-2">
+                        <a href="{% url 'opensees:download_punching_shear_file' project.pk task.pk files_available.evaluation %}" 
+                           class="btn btn-outline-info btn-sm w-100" download>
+                            Evaluation (JSON)
+                        </a>
+                    </div>
+                    {% endif %}
+                    
+                    {% if files_available.report %}
+                    <div class="col-md-3 mb-2">
+                        <a href="{% url 'opensees:download_punching_shear_file' project.pk task.pk files_available.report %}" 
+                           class="btn btn-outline-warning btn-sm w-100" download>
+                            Report (TXT)
+                        </a>
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
+            
+            <!-- Tabbed Results Display -->
+            <ul class="nav nav-tabs mb-4" id="resultTabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" id="summary-tab" data-bs-toggle="tab" data-bs-target="#summary-content" type="button" role="tab">
+                        Summary
+                    </button>
+                </li>
+                {% if evaluation_results %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="evaluation-tab" data-bs-toggle="tab" data-bs-target="#evaluation-content" type="button" role="tab">
+                        Evaluation
+                    </button>
+                </li>
+                {% endif %}
+                {% if results_html %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="detailed-tab" data-bs-toggle="tab" data-bs-target="#detailed-content" type="button" role="tab">
+                        Detailed Results
+                    </button>
+                </li>
+                {% endif %}
+                {% if report_content %}
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" id="report-tab" data-bs-toggle="tab" data-bs-target="#report-content" type="button" role="tab">
+                        Report
+                    </button>
+                </li>
+                {% endif %}
+            </ul>
+            
+            <div class="tab-content" id="resultTabContent">
+                <!-- Summary Tab -->
+                <div class="tab-pane fade show active" id="summary-content" role="tabpanel">
+                    {% if evaluation_results %}
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h6>Analysis Parameters</h6>
+                            <table class="table table-sm">
+                                <tr><td>Perimeter b0:</td><td>{{ evaluation_results.b0|floatformat:1 }} in</td></tr>
+                                <tr><td>Effective depth d:</td><td>{{ evaluation_results.d|default:"N/A" }} in</td></tr>
+                                <tr><td>Max Shear Stress:</td><td>{{ evaluation_results.v_max|floatformat:0 }} psi</td></tr>
+                                <tr><td>ϕVc:</td><td>{{ evaluation_results.phiVc|floatformat:0 }} psi</td></tr>
+                            </table>
+                        </div>
+                        <div class="col-md-6">
+                            <h6>Design Status</h6>
+                            <table class="table table-sm">
+                                <tr><td>D/C Ratio:</td><td>{{ evaluation_results.dc_concrete|floatformat:2 }}</td></tr>
+                                <tr><td>Status:</td><td><span class="badge {% if evaluation_results.status == 'PASS' %}bg-success{% else %}bg-danger{% endif %}">{{ evaluation_results.status }}</span></td></tr>
+                                <tr><td>Action:</td><td>{{ evaluation_results.action }}</td></tr>
+                            </table>
+                        </div>
+                    </div>
+                    {% endif %}
+                </div>
+                
+                <!-- Evaluation Tab -->
+                {% if evaluation_results %}
+                <div class="tab-pane fade" id="evaluation-content" role="tabpanel">
+                    <div class="accordion" id="evaluationAccordion">
+                        
+                        <!-- Conventional Reinforcement -->
+                        {% if evaluation_results.conventional_design %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="conventionalHeading">
+                                <button class="accordion-button" type="button" data-bs-toggle="collapse" data-bs-target="#conventionalCollapse">
+                                    Option 1: Conventional Reinforcement
+                                    {% if evaluation_results.conventional_design.feasible %}
+                                    <span class="badge bg-success ms-2">Feasible</span>
+                                    {% else %}
+                                    <span class="badge bg-danger ms-2">Not Feasible</span>
+                                    {% endif %}
+                                </button>
+                            </h2>
+                            <div id="conventionalCollapse" class="accordion-collapse collapse show">
+                                <div class="accordion-body">
+                                    {% if evaluation_results.conventional_design.feasible %}
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <h6>Design Parameters</h6>
+                                            <table class="table table-sm">
+                                                <tr><td>Required Vs:</td><td>{{ evaluation_results.conventional_design.vs_required|floatformat:0 }} psi</td></tr>
+                                                <tr><td>Provided Vs:</td><td>{{ evaluation_results.conventional_design.vs_provided|floatformat:0 }} psi</td></tr>
+                                                <tr><td>Bar Size:</td><td>{{ evaluation_results.conventional_design.bar_size }}</td></tr>
+                                                <tr><td>Spacing:</td><td>{{ evaluation_results.conventional_design.spacing_both_ways }}" c/c both ways</td></tr>
+                                            </table>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <h6>Reinforcement Details</h6>
+                                            <table class="table table-sm">
+                                                <tr><td>X-direction bars:</td><td>{{ evaluation_results.conventional_design.bars_x_direction }} @ {{ evaluation_results.conventional_design.bar_length_x|floatformat:1 }}" long</td></tr>
+                                                <tr><td>Y-direction bars:</td><td>{{ evaluation_results.conventional_design.bars_y_direction }} @ {{ evaluation_results.conventional_design.bar_length_y|floatformat:1 }}" long</td></tr>
+                                                <tr><td>Total bars:</td><td>{{ evaluation_results.conventional_design.total_bars }}</td></tr>
+                                                <tr><td>Total steel area:</td><td>{{ evaluation_results.conventional_design.total_steel_area|floatformat:2 }} sq in</td></tr>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    {% else %}
+                                    <div class="alert alert-warning">
+                                        {{ evaluation_results.conventional_design.message }}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Stud Reinforcement -->
+                        {% if evaluation_results.stud_design %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="studHeading">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#studCollapse">
+                                    Option 2: Stud Rail Reinforcement
+                                    {% if evaluation_results.stud_design.feasible %}
+                                    <span class="badge bg-success ms-2">Feasible</span>
+                                    {% else %}
+                                    <span class="badge bg-danger ms-2">Not Feasible</span>
+                                    {% endif %}
+                                </button>
+                            </h2>
+                            <div id="studCollapse" class="accordion-collapse collapse">
+                                <div class="accordion-body">
+                                    {% if evaluation_results.stud_design.feasible %}
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <h6>Design Parameters</h6>
+                                            <table class="table table-sm">
+                                                <tr><td>Required Vs:</td><td>{{ evaluation_results.stud_design.vs_required|floatformat:0 }} psi</td></tr>
+                                                <tr><td>Provided Vs:</td><td>{{ evaluation_results.stud_design.vs_provided|floatformat:0 }} psi</td></tr>
+                                                <tr><td>Stud Size:</td><td>{{ evaluation_results.stud_design.stud_size }}</td></tr>
+                                                <tr><td>Total Studs:</td><td>{{ evaluation_results.stud_design.total_studs }}</td></tr>
+                                            </table>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <h6>Layout Details</h6>
+                                            <table class="table table-sm">
+                                                <tr><td>Studs per Row:</td><td>{{ evaluation_results.stud_design.n_studs_per_row }}</td></tr>
+                                                <tr><td>Number of Rows:</td><td>{{ evaluation_results.stud_design.n_rows }}</td></tr>
+                                                <tr><td>Tangential Spacing:</td><td>{{ evaluation_results.stud_design.s_tangential|floatformat:1 }}" (max {{ evaluation_results.stud_design.s_max_tangential|floatformat:1 }}")</td></tr>
+                                                <tr><td>Radial Spacing:</td><td>{{ evaluation_results.stud_design.s_radial|floatformat:1 }}" maximum</td></tr>
+                                            </table>
+                                        </div>
+                                    </div>
+                                    {% else %}
+                                    <div class="alert alert-warning">
+                                        {{ evaluation_results.stud_design.message }}
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Column Capital/Drop Panel -->
+                        {% if evaluation_results.capital_design %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="capitalHeading">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#capitalCollapse">
+                                    Option 3: Column Capital/Drop Panel Design
+                                    {% if evaluation_results.capital_design.feasible %}
+                                    <span class="badge bg-success ms-2">Feasible</span>
+                                    {% else %}
+                                    <span class="badge bg-danger ms-2">Not Feasible</span>
+                                    {% endif %}
+                                </button>
+                            </h2>
+                            <div id="capitalCollapse" class="accordion-collapse collapse">
+                                <div class="accordion-body">
+                                    <p><strong>Original Configuration:</strong></p>
+                                    <ul>
+                                        <li>Column: {{ evaluation_results.capital_design.original_column }}</li>
+                                        <li>Thickness: {{ evaluation_results.capital_design.original_thickness }}"</li>
+                                        <li>Perimeter: {{ evaluation_results.capital_design.original_perimeter|floatformat:1 }}"</li>
+                                    </ul>
+                                    
+                                    {% if evaluation_results.capital_design.thickness_options %}
+                                    <h6>Drop Panel Thickness Options:</h6>
+                                    <div class="table-responsive mb-3">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Option</th>
+                                                    <th>Extra Thickness</th>
+                                                    <th>Total Thickness</th>
+                                                    <th>New ϕVc (psi)</th>
+                                                    <th>D/C Ratio</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for opt in evaluation_results.capital_design.thickness_options %}
+                                                <tr>
+                                                    <td>{{ forloop.counter }}</td>
+                                                    <td>{{ opt.extra_thickness }}"</td>
+                                                    <td>{{ opt.total_thickness }}"</td>
+                                                    <td>{{ opt.phi_vc_new|floatformat:0 }}</td>
+                                                    <td>{{ opt.dc_ratio|floatformat:2 }}</td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if evaluation_results.capital_design.capital_options %}
+                                    <h6>Column Capital Extension Options:</h6>
+                                    <div class="table-responsive mb-3">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Option</th>
+                                                    <th>Extension</th>
+                                                    <th>New Capital Size</th>
+                                                    <th>New Perimeter</th>
+                                                    <th>New ϕVc (psi)</th>
+                                                    <th>D/C Ratio</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for opt in evaluation_results.capital_design.capital_options %}
+                                                <tr>
+                                                    <td>{{ forloop.counter }}</td>
+                                                    <td>{{ opt.capital_extension }}"</td>
+                                                    <td>{{ opt.capital_width }}" × {{ opt.capital_depth }}"</td>
+                                                    <td>{{ opt.b0_new|floatformat:1 }}"</td>
+                                                    <td>{{ opt.phi_vc_new|floatformat:0 }}</td>
+                                                    <td>{{ opt.dc_ratio|floatformat:2 }}</td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if evaluation_results.capital_design.combined_options %}
+                                    <h6>Combined Drop Panel + Capital Options:</h6>
+                                    <div class="table-responsive mb-3">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Option</th>
+                                                    <th>Extra Thickness</th>
+                                                    <th>Capital Extension</th>
+                                                    <th>Total Thickness</th>
+                                                    <th>Capital Size</th>
+                                                    <th>New Perimeter</th>
+                                                    <th>New ϕVc (psi)</th>
+                                                    <th>D/C Ratio</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for opt in evaluation_results.capital_design.combined_options %}
+                                                <tr>
+                                                    <td>{{ forloop.counter }}</td>
+                                                    <td>{{ opt.extra_thickness }}"</td>
+                                                    <td>{{ opt.capital_extension }}"</td>
+                                                    <td>{{ opt.total_thickness }}"</td>
+                                                    <td>{{ opt.capital_width }}" × {{ opt.capital_depth }}"</td>
+                                                    <td>{{ opt.b0_new|floatformat:1 }}"</td>
+                                                    <td>{{ opt.phi_vc_new|floatformat:0 }}</td>
+                                                    <td>{{ opt.dc_ratio|floatformat:2 }}</td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    {% endif %}
+                                    
+                                    {% if not evaluation_results.capital_design.feasible %}
+                                    <div class="alert alert-warning">
+                                        No feasible column capital/drop panel solutions found within typical limits
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                        
+                        <!-- Concrete Strength Upgrade -->
+                        {% if evaluation_results.strength_upgrade %}
+                        <div class="accordion-item">
+                            <h2 class="accordion-header" id="strengthHeading">
+                                <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#strengthCollapse">
+                                    Option 4: Concrete Strength Upgrade
+                                </button>
+                            </h2>
+                            <div id="strengthCollapse" class="accordion-collapse collapse">
+                                <div class="accordion-body">
+                                    <p><strong>Current f'c:</strong> {{ evaluation_results.strength_upgrade.current_fc }} psi</p>
+                                    
+                                    {% if evaluation_results.strength_upgrade.strength_options %}
+                                    <h6>Concrete Strength Upgrade Options:</h6>
+                                    <div class="table-responsive">
+                                        <table class="table table-sm">
+                                            <thead>
+                                                <tr>
+                                                    <th>Option</th>
+                                                    <th>New f'c (psi)</th>
+                                                    <th>Increase (psi)</th>
+                                                    <th>Increase (%)</th>
+                                                    <th>New ϕVc (psi)</th>
+                                                    <th>D/C Ratio</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {% for opt in evaluation_results.strength_upgrade.strength_options %}
+                                                <tr>
+                                                    <td>{{ forloop.counter }}</td>
+                                                    <td>{{ opt.fc_new }}</td>
+                                                    <td>+{{ opt.fc_increase }}</td>
+                                                    <td>+{{ opt.strength_increase_percent|floatformat:0 }}%</td>
+                                                    <td>{{ opt.phi_vc_new|floatformat:0 }}</td>
+                                                    <td>{{ opt.dc_ratio|floatformat:2 }}</td>
+                                                </tr>
+                                                {% endfor %}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                    {% else %}
+                                    <div class="alert alert-info">
+                                        No feasible concrete strength upgrade options found (max f'c already considered)
+                                    </div>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
+                
+                <!-- Detailed Results Tab -->
+                {% if results_html %}
+                <div class="tab-pane fade" id="detailed-content" role="tabpanel">
+                    <div class="table-responsive">
+                        {{ results_html|safe }}
+                    </div>
+                </div>
+                {% endif %}
+                
+                <!-- Report Tab -->
+                {% if report_content %}
+                <div class="tab-pane fade" id="report-content" role="tabpanel">
+                    <pre class="bg-light p-3" style="white-space: pre-wrap; font-family: 'Courier New', monospace; font-size: 0.9em;">{{ report_content }}</pre>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <div class="mt-4">
+        <a href="{% url 'opensees:run_analysis' project.pk task.pk %}" class="btn btn-secondary">Back to Analysis</a>
+    </div>
+</div>
+
+<!-- JavaScript for Input Helpers -->
+<script>
+// Sample data templates
+const sampleData = {
+    json: {
+        "col_width": 20,
+        "col_depth": 20,
+        "slab_avg_depth": 8,
+        "condition": "I",
+        "studrail_length": 12,
+        "Vz": -200,
+        "Mx": 500,
+        "My": 300,
+        "f_prime_c": 4000,
+        "fy": 60000,
+        "reinforcement_type": "both",
+        "consider_ecc": true,
+        "gamma_vx": "auto",
+        "gamma_vy": "auto",
+        "openings": [
+            {"xo": 10, "yo": 10, "width": 5, "depth": 5}
+        ]
+    },
+    keyValue: `col_width: 20
+col_depth: 20
+slab_avg_depth: 8
+condition: I
+studrail_length: 12
+Vz: -200
+Mx: 500
+My: 300
+f_prime_c: 4000
+fy: 60000
+reinforcement_type: both
+consider_ecc: true
+gamma_vx: auto
+gamma_vy: auto
+openings: [{"xo": 10, "yo": 10, "width": 5, "depth": 5}]`
+};
+
+// Add helper buttons
+document.addEventListener('DOMContentLoaded', function() {
+    const textarea = document.getElementById('input_data');
+    if (textarea && !textarea.value.trim()) {
+        // Create helper buttons
+        const helpersDiv = document.createElement('div');
+        helpersDiv.className = 'mb-2';
+        helpersDiv.innerHTML = `
+            <small class="text-muted">Quick start: </small>
+            <button type="button" class="btn btn-sm btn-outline-info me-2" onclick="loadSampleJSON()">Load JSON Sample</button>
+            <button type="button" class="btn btn-sm btn-outline-info me-2" onclick="loadSampleKeyValue()">Load Key:Value Sample</button>
+            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="clearInput()">Clear</button>
+        `;
+        textarea.parentNode.insertBefore(helpersDiv, textarea);
+    }
+});
+
+function loadSampleJSON() {
+    document.getElementById('input_data').value = JSON.stringify(sampleData.json, null, 2);
+}
+
+function loadSampleKeyValue() {
+    document.getElementById('input_data').value = sampleData.keyValue;
+}
+
+function clearInput() {
+    document.getElementById('input_data').value = '';
+}
+
+// Auto-resize textarea
+document.getElementById('input_data').addEventListener('input', function() {
+    this.style.height = 'auto';
+    this.style.height = this.scrollHeight + 'px';
+});
+
+// Bootstrap JS for tabs and accordion functionality
+document.addEventListener('DOMContentLoaded', function() {
+    // Initialize Bootstrap components if needed
+});
+</script>
+
+<!-- Bootstrap JS for tabs and accordion functionality -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+{% endblock %}

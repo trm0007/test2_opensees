@@ -28,4 +28,22 @@ urlpatterns = [
     path('<int:project_id>/<int:task_id>/calculator4/', views.calculator4, name='calculator4'),
     # New Wind Analysis URL
     path('<int:project_id>/tasks/<int:task_id>/calculator5/', views.calculator5, name='calculator5'),
+
+        # Punching Shear Analysis URLs
+    path('projects/<int:project_pk>/tasks/<int:task_pk>/punching-shear/', 
+         views.punching_shear_analysis, 
+         name='punching_shear_analysis'),
+    
+    path('projects/<int:project_pk>/tasks/<int:task_pk>/punching-shear/download/<str:filename>/', 
+         views.download_punching_shear_file, 
+         name='download_punching_shear_file'),
+     
+     path('project/<int:project_id>/task/<int:task_id>/calculator6/', views.calculator6, name='calculator6'),
+
+    path(
+        'project/<int:project_id>/task/<int:task_id>/calculator11/', 
+        views.code_editor, 
+        name='python-editor'
+    ),
+
 ]

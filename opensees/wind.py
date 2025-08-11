@@ -714,4 +714,4 @@ wind_input_data = {
     "topographic_params": {"k1": 0, "k2": 0, "k3": 0}
 }
 
-calculate_wind_loads(wind_input_data)
+# calculate_wind_loads(wind_input_data)

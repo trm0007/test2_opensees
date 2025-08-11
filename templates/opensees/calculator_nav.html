@@ -5,9 +5,18 @@
     
     <a href="{% url 'opensees:calculator4' project.pk task.pk %}" class="btn btn-outline-primary">Seismic Analysis</a>
 
+    <a href="{% url 'opensees:calculator5' project.pk task.pk %}" class="btn btn-outline-primary">Wind Analysis</a>
+    <a href="{% url 'opensees:punching_shear_analysis' project.pk task.pk %}" class="btn btn-primary active">Punching Shear</a>
+
+    <a href="{% url 'opensees:calculator6' project.pk task.pk %}" class="btn btn-outline-primary">Center of Mass</a>
     
+    <!-- Dynamic link with variables from context -->
+    <a href="{% url 'opensees:python-editor' project_id=project.pk task_id=task.pk %}" class="btn btn-outline-primary">open code editor</a>
+
+
+
     <a href="{% url 'opensees:input' project.pk task.pk %}" class="btn btn-outline-secondary">← Back to Input</a>
     
-    <a href="{% url 'opensees:calculator5' project.pk task.pk %}" class="btn btn-outline-primary">Wind Analysis</a>
+
 
 </div>

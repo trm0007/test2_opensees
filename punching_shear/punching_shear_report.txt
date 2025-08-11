@@ -1,0 +1,13 @@
+=== PUNCHING SHEAR EVALUATION ===
+Perimeter b0: 160.0 in
+Effective depth d: 8.0 in
+Max Shear Stress: 171 psi
+ϕVc: 190 psi
+D/C (concrete only): 0.90
+Status: SAFE - No shear reinforcement needed
+Action: Design adequate
+
+=== ANALYSIS SUMMARY ===
+Number of segments: 319
+Min shear stress: -0.1708 ksi
+Max shear stress: -0.1425 ksi

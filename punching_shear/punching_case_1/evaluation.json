@@ -1,0 +1,16 @@
+{
+  "v_max": 173.8207140057461,
+  "phiVc": 189.73665961010275,
+  "phiVn_existing": 245.98665961010278,
+  "dc_concrete": 0.9161156012914798,
+  "dc_total": 0.7066265881298517,
+  "status": "SAFE - No shear reinforcement needed",
+  "action": "Design adequate",
+  "b0": 157.9388807707839,
+  "vc": 252.98221281347034,
+  "vs_existing": 75.0,
+  "conventional_design": null,
+  "stud_design": null,
+  "capital_design": null,
+  "strength_upgrade": null
+}

@@ -231,8 +231,8 @@ def apply_structural_loads(load_cases, load_combinations, combo_name, pattern_ta
                    float(pz), float(py), float(loc), float(px))
     
     # Apply shell pressure loads
-    for shell_tag, pressure in load_data["shell_pressure_loads"]:
-        ops.eleLoad("-ele", int(shell_tag), "-type", "-surfaceLoad", float(pressure))
+    # for shell_tag, pressure in load_data["shell_pressure_loads"]:
+    #     ops.eleLoad("-ele", int(shell_tag), "-type", "-surfaceLoad", float(pressure))
     
     return load_data
 

@@ -2,128 +2,224 @@
 
 {% block content %}
 <div class="container">
+    <p>
+        {
+    "numBayX": 2,
+    "numBayY": 2,
+    "numFloor": 3,
+    "num_x_div": 3,
+    "num_y_div": 4,
+    "bayWidthX": [5.0, 5.0],
+    "bayWidthY": [4.0, 4.0],
+    "storyHeights": [3.0, 3.0, 3.0],
+    "add_nodes": {
+        "1001": [0.0, 0.0, 10.0],
+        "1002": [10.0, 8.0, 10.0]
+    },
+    "delete_nodes": [5, 7],
+    "add_beams": {
+        "1001": [1001, 1002],
+        "1002": [1, 1001]
+    },
+    "delete_beams": [3, 5],
+    "add_shells": {
+        "1001": [1, 2, 1002, 1001],
+        "1002": [3, 4, 1002, 1001]
+    },
+    "delete_shells": [10001, 10002]
+}
+    </p>
+</div>
+<div class="container">
     <h2 class="mb-4">Structural Model Generator</h2>
     
     {% include "opensees/calculator_nav.html" %}
     
     <form method="post" action="">
-    {% csrf_token %}
-    <!-- Existing fields -->
-    <div class="form-group">
-        <label for="numBayX">Number of Bays in X Direction</label>
-        <input type="number" class="form-control" id="numBayX" name="numBayX" 
-            value="{{ request.POST.numBayX|default:'2' }}" min="1" required>
-    </div>
-    <div class="form-group">
-        <label for="numBayY">Number of Bays in Y Direction</label>
-        <input type="number" class="form-control" id="numBayY" name="numBayY" 
-            value="{{ request.POST.numBayY|default:'2' }}" min="1" required>
-    </div>
-    <div class="form-group">
-        <label for="numFloor">Number of Floors</label>
-        <input type="number" class="form-control" id="numFloor" name="numFloor" 
-            value="{{ request.POST.numFloor|default:'3' }}" min="1" required>
-    </div>
-    
-    <!-- New division fields -->
-    <div class="form-group">
-        <label for="num_x_div">Divisions per Bay in X Direction</label>
-        <input type="number" class="form-control" id="num_x_div" name="num_x_div" 
-            value="{{ request.POST.num_x_div|default:'1' }}" min="1" required>
-        <small class="form-text text-muted">Number of shell elements per bay in X direction</small>
-    </div>
-    <div class="form-group">
-        <label for="num_y_div">Divisions per Bay in Y Direction</label>
-        <input type="number" class="form-control" id="num_y_div" name="num_y_div" 
-            value="{{ request.POST.num_y_div|default:'1' }}" min="1" required>
-        <small class="form-text text-muted">Number of shell elements per bay in Y direction</small>
-    </div>
-    
-    <!-- List inputs -->
-    <div class="form-group">
-        <label for="bayWidthX">Bay Widths in X Direction (comma-separated, meters)</label>
-        <textarea class="form-control" id="bayWidthX" name="bayWidthX" rows="2" required>{{ request.POST.bayWidthX|default:'[5.0, 5.0]' }}</textarea>
-        <small class="form-text text-muted">Example: [5.0, 5.0] for two 5m bays</small>
-    </div>
-    <div class="form-group">
-        <label for="bayWidthY">Bay Widths in Y Direction (comma-separated, meters)</label>
-        <textarea class="form-control" id="bayWidthY" name="bayWidthY" rows="2" required>{{ request.POST.bayWidthY|default:'[4.0, 4.0]' }}</textarea>
-    </div>
-    <div class="form-group">
-        <label for="storyHeights">Story Heights (comma-separated, meters)</label>
-        <textarea class="form-control" id="storyHeights" name="storyHeights" rows="3" required>{{ request.POST.storyHeights|default:'[3.0, 3.0, 3.0]' }}</textarea>
-    </div>
-    <div class="form-group">
-        <label for="slab_nodes">Slab Nodes (as list)</label>
-        <textarea class="form-control" id="slab_nodes" name="slab_nodes" rows="3" required>
-    {{ request.POST.slab_nodes|default:'["slab1", [1, 2, 3, 4], [], "slab2", [0, 0, 10, 8], [], "slab3", [0, 0, 10, 8], []]' }}
-        </textarea>
-        <small class="form-text text-muted">Enter slab data in list format</small>
-    </div>
+        {% csrf_token %}
+        <div class="form-group">
+            <label for="model_data">Model Configuration (JSON format)</label>
 
-<!-- New input fields -->
-<div class="form-group">
-    <label for="add_nodes">Add Nodes</label>
-    <textarea class="form-control" id="add_nodes" name="add_nodes" rows="3" placeholder='{"node_id1": [x1,y1,z1], "node_id2": [x2,y2,z2], ...}'></textarea>
-    <small class="form-text text-muted">Format: {"node_id": [x,y,z], ...} - Use unique node IDs</small>
+            <textarea class="form-control" id="model_data" name="model_data" rows="20" required>
+                {
+                    "numBayX": 2,
+                    "numBayY": 2,
+                    "numFloor": 3,
+                    "num_x_div": 3,
+                    "num_y_div": 4,
+                    "bayWidthX": [5.0, 5.0],
+                    "bayWidthY": [4.0, 4.0],
+                    "storyHeights": [3.0, 3.0, 3.0],
+                    "add_nodes": null,
+                    "delete_nodes": null,
+                    "add_beams": null,
+                    "delete_beams": null,
+                    "add_shells": null,
+                    "delete_shells": null
+                }
+                </textarea>
+
+            <small class="form-text text-muted">Enter all model parameters in JSON format</small>
+        </div>
+        <button type="submit" class="btn btn-primary">Generate Model</button>
+    </form>
+
+
+<!-- Original sections preserved -->
+<div class="mb-3">
+    <h5>Building</h5>
+    {{ building }}
 </div>
 
-<div class="form-group">
-    <label for="delete_nodes">Delete Nodes</label>
-    <textarea class="form-control" id="delete_nodes" name="delete_nodes" rows="2" placeholder='[node_id1, node_id2, ...]'></textarea>
-    <small class="form-text text-muted">Format: [node_id, node_id, ...]</small>
+<div class="mb-3">
+    <h5>Nodes</h5>
+    {{ frame_nodes }}
 </div>
 
-<div class="form-group">
-    <label for="add_beams">Add Beams</label>
-    <textarea class="form-control" id="add_beams" name="add_beams" rows="3" placeholder='{"beam_id1": [i_node,j_node], "beam_id2": [i_node,j_node], ...}'></textarea>
-    <small class="form-text text-muted">Format: {"beam_id": [i_node,j_node], ...} - Nodes must exist</small>
+<div class="mb-3">
+    <h5>Beams</h5>
+    {{ beams }}
 </div>
 
-<div class="form-group">
-    <label for="delete_beams">Delete Beams</label>
-    <textarea class="form-control" id="delete_beams" name="delete_beams" rows="2" placeholder='["beam_id1", "beam_id2", ...]'></textarea>
-    <small class="form-text text-muted">Format: ["beam_id", "beam_id", ...]</small>
+<div class="mb-3">
+    <h5>Shells</h5>
+    {{ shells }}
 </div>
+<h4>filtered_nodes_by_z</h4>
+{% for z, nodes in filtered_nodes_by_z.items %}
+  <h5>Z = {{ z }}</h5>
+  <table border="1" cellspacing="0" cellpadding="4" style="border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="border: 1px solid black;">Node ID</th>
+        <th style="border: 1px solid black;">X</th>
+        <th style="border: 1px solid black;">Y</th>
+        <th style="border: 1px solid black;">Z</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for node_id, coords in nodes.items %}
+        <tr>
+          <td style="border: 1px solid black;">{{ node_id }}</td>
+          <td style="border: 1px solid black;">{{ coords.0 }}</td>
+          <td style="border: 1px solid black;">{{ coords.1 }}</td>
+          <td style="border: 1px solid black;">{{ coords.2 }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endfor %}
 
-<div class="form-group">
-    <label for="add_shells">Add Shells</label>
-    <textarea class="form-control" id="add_shells" name="add_shells" rows="3" placeholder='{"shell_id1": [i,j,k,l], "shell_id2": [i,j,k,l], ...}'></textarea>
-    <small class="form-text text-muted">Format: {"shell_id": [i,j,k,l], ...} - 4 nodes required per shell</small>
-</div>
+<h4>filtered_columns_by_z</h4>
+{% for z, columns in filtered_columns_by_z.items %}
+  <h5>Z = {{ z }}</h5>
+  <table border="1" cellspacing="0" cellpadding="4" style="border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="border: 1px solid black;">Column ID</th>
+        <th style="border: 1px solid black;">Start Node</th>
+        <th style="border: 1px solid black;">End Node</th>
+        <th style="border: 1px solid black;">Some ID</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for col_id, vals in columns.items %}
+        <tr>
+          <td style="border: 1px solid black;">{{ col_id }}</td>
+          <td style="border: 1px solid black;">{{ vals.0 }}</td>
+          <td style="border: 1px solid black;">{{ vals.1 }}</td>
+          <td style="border: 1px solid black;">{{ vals.2 }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endfor %}
 
-<div class="form-group">
-    <label for="delete_shells">Delete Shells</label>
-    <textarea class="form-control" id="delete_shells" name="delete_shells" rows="2" placeholder='["shell_id1", "shell_id2", ...]'></textarea>
-    <small class="form-text text-muted">Format: ["shell_id", "shell_id", ...]</small>
-</div>
+<h4>filtered_beams_x_by_z</h4>
+{% for z, beams_x in filtered_beams_x_by_z.items %}
+  <h5>Z = {{ z }}</h5>
+  <table border="1" cellspacing="0" cellpadding="4" style="border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="border: 1px solid black;">Beam ID</th>
+        <th style="border: 1px solid black;">Node 1</th>
+        <th style="border: 1px solid black;">Node 2</th>
+        <th style="border: 1px solid black;">Beam Number</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for beam_id, vals in beams_x.items %}
+        <tr>
+          <td style="border: 1px solid black;">{{ beam_id }}</td>
+          <td style="border: 1px solid black;">{{ vals.0 }}</td>
+          <td style="border: 1px solid black;">{{ vals.1 }}</td>
+          <td style="border: 1px solid black;">{{ vals.2 }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endfor %}
 
-    <button type="submit" class="btn btn-primary">Generate Model</button>
-</form>
-    
+<h4>filtered_beams_y_by_z</h4>
+{% for z, beams_y in filtered_beams_y_by_z.items %}
+  <h5>Z = {{ z }}</h5>
+  <table border="1" cellspacing="0" cellpadding="4" style="border-collapse: collapse;">
+    <thead>
+      <tr>
+        <th style="border: 1px solid black;">Beam ID</th>
+        <th style="border: 1px solid black;">Node 1</th>
+        <th style="border: 1px solid black;">Node 2</th>
+        <th style="border: 1px solid black;">Beam Number</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for beam_id, vals in beams_y.items %}
+        <tr>
+          <td style="border: 1px solid black;">{{ beam_id }}</td>
+          <td style="border: 1px solid black;">{{ vals.0 }}</td>
+          <td style="border: 1px solid black;">{{ vals.1 }}</td>
+          <td style="border: 1px solid black;">{{ vals.2 }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endfor %}
+
+<h4>filtered_shells_by_z</h4>
+{% for z, floors in filtered_shells_by_z.items %}
+  <h5>Z = {{ z }}</h5>
+  {% for floor_key, floor_data in floors.items %}
+    <h6>{{ floor_key }} (Level {{ floor_data.floor_level }})</h6>
+    <table border="1" cellspacing="0" cellpadding="4" style="border-collapse: collapse;">
+      <thead>
+        <tr>
+          <th style="border: 1px solid black;">Element ID</th>
+          <th style="border: 1px solid black;">Type</th>
+          <th style="border: 1px solid black;">Nodes</th>
+          <th style="border: 1px solid black;">Coordinates</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for elem_id, elem in floor_data.elements.items %}
+          <tr>
+            <td style="border: 1px solid black;">{{ elem_id }}</td>
+            <td style="border: 1px solid black;">{{ elem.type }}</td>
+            <td style="border: 1px solid black;">{{ elem.nodes|join:", " }}</td>
+            <td style="border: 1px solid black;">
+              {% for coord in elem.coordinates %}
+                [{{ coord.0 }}, {{ coord.1 }}, {{ coord.2 }}]<br>
+              {% endfor %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% endfor %}
+{% endfor %}
 
 
-    <div class="mb-3">
-        <h5>Building</h5>
-        {{ building }}
-    </div>
 
-    <div class="mb-3">
-        <h5>Nodes</h5>
-        {{ frame_nodes }}
-    </div>
-
-    <div class="mb-3">
-        <h5>Beams</h5>
-        {{ beams }}
-    </div>
-
-    <div class="mb-3">
-        <h5>Shells</h5>
-        {{ shells }}
-    </div>
-
-
+<!-- Original visualization sections -->
 {% if image_url %}
 <div class="mt-4">
     <h5>3D Model Visualization</h5>
@@ -132,8 +228,134 @@
 </div>
 {% endif %}
 
+{% if mesh_image_info %}
+<div class="mt-4">
+    <h5>Floor Mesh Visualizations</h5>
+    <div class="row">
+        {% for mesh_info in mesh_image_info %}
+        <div class="col-md-6 col-lg-4 mb-4">
+            <div class="card">
+                <div class="card-header">
+                    <h6 class="mb-0">Floor {{ mesh_info.floor }} Mesh</h6>
+                </div>
+                <div class="card-body p-2">
+                    <img src="{{ mesh_info.url }}" 
+                         alt="Floor {{ mesh_info.floor }} Mesh" 
+                         class="img-fluid rounded" 
+                         style="width: 100%; height: auto; max-height: 300px; object-fit: contain;">
+                </div>
+                <div class="card-footer text-muted small">
+                    {{ mesh_info.filename }}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
 </div>
 
+
+<!-- Alternative layout: Tabs for floor meshes -->
+<div class="mt-4">
+    <h5>Floor Mesh Details</h5>
+    <ul class="nav nav-tabs" id="meshTabs" role="tablist">
+        {% for mesh_info in mesh_image_info %}
+        <li class="nav-item" role="presentation">
+            <button class="nav-link {% if forloop.first %}active{% endif %}" 
+                    id="floor{{ mesh_info.floor }}-tab" 
+                    data-bs-toggle="tab" 
+                    data-bs-target="#floor{{ mesh_info.floor }}" 
+                    type="button" 
+                    role="tab" 
+                    aria-controls="floor{{ mesh_info.floor }}" 
+                    aria-selected="{% if forloop.first %}true{% else %}false{% endif %}">
+                Floor {{ mesh_info.floor }}
+            </button>
+        </li>
+        {% endfor %}
+    </ul>
+    
+    <div class="tab-content" id="meshTabsContent">
+        {% for mesh_info in mesh_image_info %}
+        <div class="tab-pane fade {% if forloop.first %}show active{% endif %}" 
+             id="floor{{ mesh_info.floor }}" 
+             role="tabpanel" 
+             aria-labelledby="floor{{ mesh_info.floor }}-tab">
+            <div class="p-3">
+                <div class="text-center">
+                    <img src="{{ mesh_info.url }}" 
+                         alt="Floor {{ mesh_info.floor }} Mesh" 
+                         class="img-fluid" 
+                         style="max-width: 100%; height: auto; max-height: 600px;">
+                </div>
+                <div class="mt-2 text-center">
+                    <small class="text-muted">{{ mesh_info.filename }}</small>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<!-- Expandable/Collapsible section for mesh images -->
+<div class="mt-4">
+    <div class="accordion" id="meshAccordion">
+        <div class="accordion-item">
+            <h2 class="accordion-header" id="meshHeading">
+                <button class="accordion-button collapsed" 
+                        type="button" 
+                        data-bs-toggle="collapse" 
+                        data-bs-target="#meshCollapse" 
+                        aria-expanded="false" 
+                        aria-controls="meshCollapse">
+                    <i class="fas fa-chart-line me-2"></i>
+                    View All Floor Mesh Visualizations ({{ mesh_image_info|length }} floors)
+                </button>
+            </h2>
+            <div id="meshCollapse" 
+                 class="accordion-collapse collapse" 
+                 aria-labelledby="meshHeading" 
+                 data-bs-parent="#meshAccordion">
+                <div class="accordion-body">
+                    <div class="row">
+                        {% for mesh_info in mesh_image_info %}
+                        <div class="col-md-6 col-xl-4 mb-3">
+                            <div class="border rounded p-2">
+                                <h6 class="text-center mb-2">Floor {{ mesh_info.floor }}</h6>
+                                <img src="{{ mesh_info.url }}" 
+                                     alt="Floor {{ mesh_info.floor }} Mesh" 
+                                     class="img-fluid rounded" 
+                                     style="width: 100%; height: 200px; object-fit: contain; background: #f8f9fa;">
+                                <div class="text-center mt-1">
+                                    <a href="{{ mesh_info.url }}" 
+                                       target="_blank" 
+                                       class="btn btn-sm btn-outline-primary">
+                                        <i class="fas fa-external-link-alt"></i> Full Size
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
+
+
+{% if filtered_plot_urls %}
+<h3>Filtered Structural Elements by Level</h3>
+<div class="filtered-plots">
+    {% for plot in filtered_plot_urls %}
+    <div class="plot-container">
+        <h4>Level Z={{ plot.z_level }}</h4>
+        <img src="{{ plot.url }}" alt="Structural elements at Z={{ plot.z_level }}" class="img-fluid" width="800" height="600">
+
+    </div>
+    {% endfor %}
+</div>
+{% endif %}
 
 
 <style>
